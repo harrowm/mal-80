@@ -6,12 +6,14 @@
 #include <stdexcept>
 
 // Flag Constants
-constexpr uint8_t FLAG_C = 0x01;
-constexpr uint8_t FLAG_N = 0x02;
-constexpr uint8_t FLAG_P = 0x04;
-constexpr uint8_t FLAG_H = 0x10;
-constexpr uint8_t FLAG_Z = 0x40;
-constexpr uint8_t FLAG_S = 0x80;
+constexpr uint8_t FLAG_C  = 0x01;  // Carry
+constexpr uint8_t FLAG_N  = 0x02;  // Subtract
+constexpr uint8_t FLAG_P  = 0x04;  // Parity/Overflow
+constexpr uint8_t FLAG_F3 = 0x08;  // Undocumented (bit 3, Y flag)
+constexpr uint8_t FLAG_H  = 0x10;  // Half Carry
+constexpr uint8_t FLAG_F5 = 0x20;  // Undocumented (bit 5, X flag)
+constexpr uint8_t FLAG_Z  = 0x40;  // Zero
+constexpr uint8_t FLAG_S  = 0x80;  // Sign
 
 // Forward declaration
 class Bus;
@@ -75,7 +77,14 @@ private:
         uint16_t bc2 = 0, de2 = 0, hl2 = 0;
 
         // Index Registers
-        uint16_t ix = 0, iy = 0;
+        union {
+            struct { uint8_t ixl, ixh; };
+            uint16_t ix = 0;
+        };
+        union {
+            struct { uint8_t iyl, iyh; };
+            uint16_t iy = 0;
+        };
 
         // Interrupt Vector & Refresh Registers
         uint8_t i = 0, r = 0;
@@ -110,6 +119,7 @@ private:
     void set_pf(uint8_t val);
     void set_nf(bool val);
     void set_cf(bool val);
+    void set_f35(uint8_t val);
     static bool parity(uint8_t val);
     void set_flags_8bit(uint8_t result, uint8_t a, uint8_t b, bool subtract, bool half_carry, bool carry = false);
     

@@ -75,6 +75,11 @@ void Z80::set_pf(uint8_t val) {
     set_flag(FLAG_P, parity(val));
 }
 
+// Set undocumented flag bits 3 and 5 from a value
+void Z80::set_f35(uint8_t val) {
+    reg.f = (reg.f & ~(FLAG_F3 | FLAG_F5)) | (val & (FLAG_F3 | FLAG_F5));
+}
+
 bool Z80::parity(uint8_t val) {
     val ^= val >> 4;
     val ^= val >> 2;
@@ -87,10 +92,15 @@ void Z80::set_flags_8bit(uint8_t result, uint8_t a, uint8_t b,
     set_sf(result);
     set_zf(result);
     set_hf(half_carry);
-    set_pf(result);
+    // P/V = overflow for arithmetic
+    if (subtract) {
+        set_flag(FLAG_P, ((a ^ b) & (a ^ result)) & 0x80);
+    } else {
+        set_flag(FLAG_P, ((~(a ^ b)) & (a ^ result)) & 0x80);
+    }
     set_nf(subtract);
     set_cf(carry);
-    (void)a; (void)b;  // Available for overflow calc if needed
+    set_f35(result);
 }
 
 uint8_t Z80::read_mem(uint16_t addr, bool is_m1) {
@@ -170,36 +180,40 @@ uint16_t Z80::pop() {
 // ARITHMETIC OPERATIONS
 // ============================================================================
 void Z80::op_add(uint8_t val) {
-    uint16_t result = reg.a + val;
-    bool hc = (reg.a & 0x0F) + (val & 0x0F) > 0x0F;
+    uint8_t old_a = reg.a;
+    uint16_t result = old_a + val;
+    bool hc = (old_a & 0x0F) + (val & 0x0F) > 0x0F;
     reg.a = result & 0xFF;
-    set_flags_8bit(reg.a, reg.a, val, false, hc, result > 0xFF);
+    set_flags_8bit(reg.a, old_a, val, false, hc, result > 0xFF);
     add_ticks(4);
 }
 
 void Z80::op_adc(uint8_t val) {
+    uint8_t old_a = reg.a;
     uint8_t carry = get_flag(FLAG_C) ? 1 : 0;
-    uint16_t result = reg.a + val + carry;
-    bool hc = (reg.a & 0x0F) + (val & 0x0F) + carry > 0x0F;
+    uint16_t result = old_a + val + carry;
+    bool hc = (old_a & 0x0F) + (val & 0x0F) + carry > 0x0F;
     reg.a = result & 0xFF;
-    set_flags_8bit(reg.a, reg.a, val, false, hc, result > 0xFF);
+    set_flags_8bit(reg.a, old_a, val, false, hc, result > 0xFF);
     add_ticks(4);
 }
 
 void Z80::op_sub(uint8_t val) {
-    uint16_t result = reg.a - val;
-    bool hc = (reg.a & 0x0F) < (val & 0x0F);
+    uint8_t old_a = reg.a;
+    uint16_t result = old_a - val;
+    bool hc = (old_a & 0x0F) < (val & 0x0F);
     reg.a = result & 0xFF;
-    set_flags_8bit(reg.a, reg.a, val, true, hc, result > 0xFF);
+    set_flags_8bit(reg.a, old_a, val, true, hc, result > 0xFF);
     add_ticks(4);
 }
 
 void Z80::op_sbc(uint8_t val) {
+    uint8_t old_a = reg.a;
     uint8_t carry = get_flag(FLAG_C) ? 1 : 0;
-    uint16_t result = reg.a - val - carry;
-    bool hc = (reg.a & 0x0F) < (val & 0x0F) + carry;
+    uint16_t result = old_a - val - carry;
+    bool hc = (old_a & 0x0F) < (val & 0x0F) + carry;
     reg.a = result & 0xFF;
-    set_flags_8bit(reg.a, reg.a, val, true, hc, result > 0xFF);
+    set_flags_8bit(reg.a, old_a, val, true, hc, result > 0xFF);
     add_ticks(4);
 }
 
@@ -211,6 +225,7 @@ void Z80::op_and(uint8_t val) {
     set_pf(reg.a);
     set_nf(false);
     set_cf(false);
+    set_f35(reg.a);
     add_ticks(4);
 }
 
@@ -222,6 +237,7 @@ void Z80::op_xor(uint8_t val) {
     set_pf(reg.a);
     set_nf(false);
     set_cf(false);
+    set_f35(reg.a);
     add_ticks(4);
 }
 
@@ -233,18 +249,21 @@ void Z80::op_or(uint8_t val) {
     set_pf(reg.a);
     set_nf(false);
     set_cf(false);
+    set_f35(reg.a);
     add_ticks(4);
 }
 
 void Z80::op_cp(uint8_t val) {
+    uint8_t result8 = reg.a - val;
     uint16_t result = reg.a - val;
     bool hc = (reg.a & 0x0F) < (val & 0x0F);
-    set_sf(result & 0xFF);
-    set_zf(result & 0xFF);
+    set_sf(result8);
+    set_zf(result8);
     set_hf(hc);
-    set_pf(result & 0xFF);
+    set_flag(FLAG_P, ((reg.a ^ val) & (reg.a ^ result8)) & 0x80);  // overflow
     set_nf(true);
     set_cf(result > 0xFF);
+    set_f35(val);  // CP: bits 3/5 come from the operand, not result
     add_ticks(4);
 }
 
@@ -254,8 +273,9 @@ void Z80::op_inc(uint8_t& r) {
     set_sf(r);
     set_zf(r);
     set_hf(hc);
-    set_pf(r);
+    set_flag(FLAG_P, r == 0x80);  // overflow: 0x7F -> 0x80
     set_nf(false);
+    set_f35(r);
     add_ticks(4);
 }
 
@@ -265,8 +285,9 @@ void Z80::op_dec(uint8_t& r) {
     set_sf(r);
     set_zf(r);
     set_hf(hc);
-    set_pf(r);
+    set_flag(FLAG_P, r == 0x7F);  // overflow: 0x80 -> 0x7F
     set_nf(true);
+    set_f35(r);
     add_ticks(4);
 }
 
@@ -287,6 +308,7 @@ void Z80::op_add16(uint16_t& r, uint16_t val) {
     set_hf(hc);
     set_nf(false);
     set_cf(result > 0xFFFF);
+    set_f35(r >> 8);  // bits 3/5 from high byte of result
     add_ticks(11);
 }
 
@@ -299,6 +321,8 @@ void Z80::op_bit(uint8_t bit, uint8_t val) {
     set_hf(true);
     set_nf(false);
     set_flag(FLAG_S, (bit == 7) && !is_zero);
+    set_flag(FLAG_P, is_zero);  // P/V = Z for BIT
+    set_f35(val);  // bits 3/5 from operand (register form)
     add_ticks(8);
 }
 
@@ -322,6 +346,7 @@ void Z80::op_rl(uint8_t& val) {
     set_hf(false);
     set_pf(val);
     set_nf(false);
+    set_f35(val);
     add_ticks(8);
 }
 
@@ -335,6 +360,7 @@ void Z80::op_rr(uint8_t& val) {
     set_hf(false);
     set_pf(val);
     set_nf(false);
+    set_f35(val);
     add_ticks(8);
 }
 
@@ -345,6 +371,7 @@ void Z80::op_rla() {
     set_cf(new_c);
     set_hf(false);
     set_nf(false);
+    set_f35(reg.a);
     add_ticks(4);
 }
 
@@ -355,6 +382,7 @@ void Z80::op_rra() {
     set_cf(new_c);
     set_hf(false);
     set_nf(false);
+    set_f35(reg.a);
     add_ticks(4);
 }
 
@@ -367,6 +395,7 @@ void Z80::op_rlc(uint8_t& val) {
     set_hf(false);
     set_pf(val);
     set_nf(false);
+    set_f35(val);
     add_ticks(8);
 }
 
@@ -379,6 +408,7 @@ void Z80::op_rrc(uint8_t& val) {
     set_hf(false);
     set_pf(val);
     set_nf(false);
+    set_f35(val);
     add_ticks(8);
 }
 
@@ -391,6 +421,7 @@ void Z80::op_sl(uint8_t& val) {
     set_hf(false);
     set_pf(val);
     set_nf(false);
+    set_f35(val);
     add_ticks(8);
 }
 
@@ -405,6 +436,7 @@ void Z80::op_sr(uint8_t& val) {
     set_hf(false);
     set_pf(val);
     set_nf(false);
+    set_f35(val);
     add_ticks(8);
 }
 
@@ -504,6 +536,7 @@ void Z80::op_ld_a_i() {
     set_hf(false);
     set_nf(false);
     set_flag(FLAG_P, reg.iff2);
+    set_f35(reg.a);
     add_ticks(9);
 }
 
@@ -514,6 +547,7 @@ void Z80::op_ld_a_r() {
     set_hf(false);
     set_nf(false);
     set_flag(FLAG_P, reg.iff2);
+    set_f35(reg.a);
     add_ticks(9);
 }
 
@@ -528,27 +562,32 @@ void Z80::op_ld_hl_sp() {
 }
 
 void Z80::op_daa() {
-    uint8_t a = reg.a;
-    uint8_t adjust = 0;
-    
-    if (get_flag(FLAG_H) || (!get_flag(FLAG_N) && (a & 0x0F) > 9))
-        adjust |= 0x06;
-    
-    if (get_flag(FLAG_C) || (!get_flag(FLAG_N) && a > 0x99)) {
-        adjust |= 0x60;
-        set_cf(true);
+    // Algorithm matches MAME Z80 core (hardware-verified)
+    uint8_t old_a = reg.a;
+    uint8_t a = old_a;
+    bool n_flag = get_flag(FLAG_N);
+    bool half = get_flag(FLAG_H);
+    bool carry = get_flag(FLAG_C);
+
+    if (n_flag) {
+        // After subtraction
+        if (half || (old_a & 0x0F) > 9) a -= 6;
+        if (carry || old_a > 0x99) a -= 0x60;
+    } else {
+        // After addition
+        if (half || (old_a & 0x0F) > 9) a += 6;
+        if (carry || old_a > 0x99) a += 0x60;
     }
-    
-    if (get_flag(FLAG_N))
-        a -= adjust;
-    else
-        a += adjust;
-    
+
     reg.a = a;
-    set_sf(a);
-    set_zf(a);
-    set_hf(false);
-    set_pf(a);
+    // Flags: preserve N, compute C/H/S/Z/P/F3/F5
+    // C: old_C OR (original A > 0x99)
+    // H: XOR of bit 4 between original and result
+    reg.f = (reg.f & (FLAG_C | FLAG_N)) | (old_a > 0x99 ? FLAG_C : 0) | ((old_a ^ a) & FLAG_H);
+    set_sf(reg.a);
+    set_zf(reg.a);
+    set_pf(reg.a);
+    set_f35(reg.a);
     add_ticks(4);
 }
 
@@ -803,13 +842,13 @@ void Z80::init_main_table() {
     
     // --- General Purpose Arithmetic ---
     main_table[0x27] = [this]() { op_daa(); };
-    main_table[0x2F] = [this]() { reg.a = ~reg.a; set_hf(true); set_nf(true); add_ticks(4); };  // CPL
-    main_table[0x3F] = [this]() { set_cf(!get_flag(FLAG_C)); set_hf(false); set_nf(false); add_ticks(4); };  // CCF
-    main_table[0x37] = [this]() { set_cf(true); set_hf(false); set_nf(false); add_ticks(4); };  // SCF
+    main_table[0x2F] = [this]() { reg.a = ~reg.a; set_hf(true); set_nf(true); set_f35(reg.a); add_ticks(4); };  // CPL
+    main_table[0x3F] = [this]() { bool old_c = get_flag(FLAG_C); set_hf(old_c); set_cf(!old_c); set_nf(false); set_f35(reg.a); add_ticks(4); };  // CCF
+    main_table[0x37] = [this]() { set_cf(true); set_hf(false); set_nf(false); set_f35(reg.a); add_ticks(4); };  // SCF
     
     // --- Rotate Accumulator ---
-    main_table[0x07] = [this]() { bool c = reg.a & 0x80; reg.a = (reg.a << 1) | (c ? 1 : 0); set_cf(c); set_hf(false); set_nf(false); add_ticks(4); };  // RLCA
-    main_table[0x0F] = [this]() { bool c = reg.a & 0x01; reg.a = (reg.a >> 1) | (c ? 0x80 : 0); set_cf(c); set_hf(false); set_nf(false); add_ticks(4); };  // RRCA
+    main_table[0x07] = [this]() { bool c = reg.a & 0x80; reg.a = (reg.a << 1) | (c ? 1 : 0); set_cf(c); set_hf(false); set_nf(false); set_f35(reg.a); add_ticks(4); };  // RLCA
+    main_table[0x0F] = [this]() { bool c = reg.a & 0x01; reg.a = (reg.a >> 1) | (c ? 0x80 : 0); set_cf(c); set_hf(false); set_nf(false); set_f35(reg.a); add_ticks(4); };  // RRCA
     main_table[0x17] = [this]() { op_rla(); };  // RLA
     main_table[0x1F] = [this]() { op_rra(); };  // RRA
     
@@ -956,15 +995,25 @@ void Z80::init_cb_table() {
     cb_table[0x2E] = [this]() { uint8_t v = read_mem(reg.hl); op_sr(v); write_mem(reg.hl, v); add_ticks(8); };
     cb_table[0x2F] = [this]() { op_sr(reg.a); };
     
+    // SLL r (0x30-0x37) - undocumented: shift left, bit 0 = 1
+    cb_table[0x30] = [this]() { bool c = reg.b & 0x80; reg.b = (reg.b << 1) | 1; set_cf(c); set_sf(reg.b); set_zf(reg.b); set_hf(false); set_pf(reg.b); set_nf(false); set_f35(reg.b); add_ticks(8); };
+    cb_table[0x31] = [this]() { bool c = reg.c & 0x80; reg.c = (reg.c << 1) | 1; set_cf(c); set_sf(reg.c); set_zf(reg.c); set_hf(false); set_pf(reg.c); set_nf(false); set_f35(reg.c); add_ticks(8); };
+    cb_table[0x32] = [this]() { bool c = reg.d & 0x80; reg.d = (reg.d << 1) | 1; set_cf(c); set_sf(reg.d); set_zf(reg.d); set_hf(false); set_pf(reg.d); set_nf(false); set_f35(reg.d); add_ticks(8); };
+    cb_table[0x33] = [this]() { bool c = reg.e & 0x80; reg.e = (reg.e << 1) | 1; set_cf(c); set_sf(reg.e); set_zf(reg.e); set_hf(false); set_pf(reg.e); set_nf(false); set_f35(reg.e); add_ticks(8); };
+    cb_table[0x34] = [this]() { bool c = reg.h & 0x80; reg.h = (reg.h << 1) | 1; set_cf(c); set_sf(reg.h); set_zf(reg.h); set_hf(false); set_pf(reg.h); set_nf(false); set_f35(reg.h); add_ticks(8); };
+    cb_table[0x35] = [this]() { bool c = reg.l & 0x80; reg.l = (reg.l << 1) | 1; set_cf(c); set_sf(reg.l); set_zf(reg.l); set_hf(false); set_pf(reg.l); set_nf(false); set_f35(reg.l); add_ticks(8); };
+    cb_table[0x36] = [this]() { uint8_t v = read_mem(reg.hl); bool c = v & 0x80; v = (v << 1) | 1; set_cf(c); set_sf(v); set_zf(v); set_hf(false); set_pf(v); set_nf(false); set_f35(v); write_mem(reg.hl, v); add_ticks(15); };
+    cb_table[0x37] = [this]() { bool c = reg.a & 0x80; reg.a = (reg.a << 1) | 1; set_cf(c); set_sf(reg.a); set_zf(reg.a); set_hf(false); set_pf(reg.a); set_nf(false); set_f35(reg.a); add_ticks(8); };
+
     // SRL r (0x38-0x3F)
-    cb_table[0x38] = [this]() { bool c = reg.b & 1; reg.b >>= 1; set_cf(c); set_sf(reg.b); set_zf(reg.b); set_hf(false); set_pf(reg.b); set_nf(false); add_ticks(8); };
-    cb_table[0x39] = [this]() { bool c = reg.c & 1; reg.c >>= 1; set_cf(c); set_sf(reg.c); set_zf(reg.c); set_hf(false); set_pf(reg.c); set_nf(false); add_ticks(8); };
-    cb_table[0x3A] = [this]() { bool c = reg.d & 1; reg.d >>= 1; set_cf(c); set_sf(reg.d); set_zf(reg.d); set_hf(false); set_pf(reg.d); set_nf(false); add_ticks(8); };
-    cb_table[0x3B] = [this]() { bool c = reg.e & 1; reg.e >>= 1; set_cf(c); set_sf(reg.e); set_zf(reg.e); set_hf(false); set_pf(reg.e); set_nf(false); add_ticks(8); };
-    cb_table[0x3C] = [this]() { bool c = reg.h & 1; reg.h >>= 1; set_cf(c); set_sf(reg.h); set_zf(reg.h); set_hf(false); set_pf(reg.h); set_nf(false); add_ticks(8); };
-    cb_table[0x3D] = [this]() { bool c = reg.l & 1; reg.l >>= 1; set_cf(c); set_sf(reg.l); set_zf(reg.l); set_hf(false); set_pf(reg.l); set_nf(false); add_ticks(8); };
-    cb_table[0x3E] = [this]() { uint8_t v = read_mem(reg.hl); bool c = v & 1; v >>= 1; set_cf(c); set_sf(v); set_zf(v); set_hf(false); set_pf(v); set_nf(false); write_mem(reg.hl, v); add_ticks(15); };
-    cb_table[0x3F] = [this]() { bool c = reg.a & 1; reg.a >>= 1; set_cf(c); set_sf(reg.a); set_zf(reg.a); set_hf(false); set_pf(reg.a); set_nf(false); add_ticks(8); };
+    cb_table[0x38] = [this]() { bool c = reg.b & 1; reg.b >>= 1; set_cf(c); set_sf(reg.b); set_zf(reg.b); set_hf(false); set_pf(reg.b); set_nf(false); set_f35(reg.b); add_ticks(8); };
+    cb_table[0x39] = [this]() { bool c = reg.c & 1; reg.c >>= 1; set_cf(c); set_sf(reg.c); set_zf(reg.c); set_hf(false); set_pf(reg.c); set_nf(false); set_f35(reg.c); add_ticks(8); };
+    cb_table[0x3A] = [this]() { bool c = reg.d & 1; reg.d >>= 1; set_cf(c); set_sf(reg.d); set_zf(reg.d); set_hf(false); set_pf(reg.d); set_nf(false); set_f35(reg.d); add_ticks(8); };
+    cb_table[0x3B] = [this]() { bool c = reg.e & 1; reg.e >>= 1; set_cf(c); set_sf(reg.e); set_zf(reg.e); set_hf(false); set_pf(reg.e); set_nf(false); set_f35(reg.e); add_ticks(8); };
+    cb_table[0x3C] = [this]() { bool c = reg.h & 1; reg.h >>= 1; set_cf(c); set_sf(reg.h); set_zf(reg.h); set_hf(false); set_pf(reg.h); set_nf(false); set_f35(reg.h); add_ticks(8); };
+    cb_table[0x3D] = [this]() { bool c = reg.l & 1; reg.l >>= 1; set_cf(c); set_sf(reg.l); set_zf(reg.l); set_hf(false); set_pf(reg.l); set_nf(false); set_f35(reg.l); add_ticks(8); };
+    cb_table[0x3E] = [this]() { uint8_t v = read_mem(reg.hl); bool c = v & 1; v >>= 1; set_cf(c); set_sf(v); set_zf(v); set_hf(false); set_pf(v); set_nf(false); set_f35(v); write_mem(reg.hl, v); add_ticks(15); };
+    cb_table[0x3F] = [this]() { bool c = reg.a & 1; reg.a >>= 1; set_cf(c); set_sf(reg.a); set_zf(reg.a); set_hf(false); set_pf(reg.a); set_nf(false); set_f35(reg.a); add_ticks(8); };
     
     // BIT b, r (0x40-0x7F)
     for (uint8_t bit = 0; bit < 8; bit++) {
@@ -972,9 +1021,15 @@ void Z80::init_cb_table() {
             uint8_t opcode = 0x40 | (bit << 3) | reg_code;
             cb_table[opcode] = [this, bit, reg_code]() {
                 uint8_t val = 0;
-                if (reg_code == 6) val = read_mem(reg.hl);
-                else val = get_reg_8(reg_code);
-                op_bit(bit, val);
+                if (reg_code == 6) {
+                    val = read_mem(reg.hl);
+                    op_bit(bit, val);
+                    // For BIT on (HL), F3/F5 come from high byte of address
+                    set_f35(reg.h);
+                } else {
+                    val = get_reg_8(reg_code);
+                    op_bit(bit, val);
+                }
             };
         }
     }
@@ -1024,6 +1079,7 @@ void Z80::init_ed_table() {
     auto ed_in = [this](uint8_t& r) {
         r = bus.read_port(reg.c);
         set_sf(r); set_zf(r); set_hf(false); set_pf(r); set_nf(false);
+        set_f35(r);
         add_ticks(12);
     };
     ed_table[0x40] = [this, ed_in]() { ed_in(reg.b); };
@@ -1032,7 +1088,7 @@ void Z80::init_ed_table() {
     ed_table[0x58] = [this, ed_in]() { ed_in(reg.e); };
     ed_table[0x60] = [this, ed_in]() { ed_in(reg.h); };
     ed_table[0x68] = [this, ed_in]() { ed_in(reg.l); };
-    ed_table[0x70] = [this]() { uint8_t tmp = bus.read_port(reg.c); set_sf(tmp); set_zf(tmp); set_hf(false); set_pf(tmp); set_nf(false); add_ticks(12); }; // IN (C) — flags only
+    ed_table[0x70] = [this]() { uint8_t tmp = bus.read_port(reg.c); set_sf(tmp); set_zf(tmp); set_hf(false); set_pf(tmp); set_nf(false); set_f35(tmp); add_ticks(12); }; // IN (C) — flags only
     ed_table[0x78] = [this, ed_in]() { ed_in(reg.a); };
 
     // ---- OUT (C), r ----
@@ -1060,6 +1116,7 @@ void Z80::init_ed_table() {
         set_flag(FLAG_P, ov);
         set_nf(true);
         set_cf(result > 0xFFFF);
+        set_f35(reg.hl >> 8);
         add_ticks(15);
     };
     ed_table[0x42] = [this, ed_sbc_hl]() { ed_sbc_hl(reg.bc); };
@@ -1080,6 +1137,7 @@ void Z80::init_ed_table() {
         set_flag(FLAG_P, ov);
         set_nf(false);
         set_cf(result > 0xFFFF);
+        set_f35(reg.hl >> 8);
         add_ticks(15);
     };
     ed_table[0x4A] = [this, ed_adc_hl]() { ed_adc_hl(reg.bc); };
@@ -1109,6 +1167,7 @@ void Z80::init_ed_table() {
         set_flag(FLAG_P, old == 0x80);  // Overflow if A was 0x80
         set_nf(true);
         set_cf(old != 0);
+        set_f35(reg.a);
         add_ticks(8);
     };
 
@@ -1130,12 +1189,14 @@ void Z80::init_ed_table() {
         reg.a = reg.i;
         set_sf(reg.a); set_zf(reg.a); set_hf(false); set_nf(false);
         set_flag(FLAG_P, reg.iff2);
+        set_f35(reg.a);
         add_ticks(9);
     };
     ed_table[0x5F] = [this]() {
         reg.a = reg.r;
         set_sf(reg.a); set_zf(reg.a); set_hf(false); set_nf(false);
         set_flag(FLAG_P, reg.iff2);
+        set_f35(reg.a);
         add_ticks(9);
     };
 
@@ -1147,6 +1208,7 @@ void Z80::init_ed_table() {
         mem = (lo_a << 4) | (mem >> 4);
         write_mem(reg.hl, mem);
         set_sf(reg.a); set_zf(reg.a); set_hf(false); set_pf(reg.a); set_nf(false);
+        set_f35(reg.a);
         add_ticks(18);
     };
 
@@ -1158,6 +1220,7 @@ void Z80::init_ed_table() {
         mem = (mem << 4) | lo_a;
         write_mem(reg.hl, mem);
         set_sf(reg.a); set_zf(reg.a); set_hf(false); set_pf(reg.a); set_nf(false);
+        set_f35(reg.a);
         add_ticks(18);
     };
 
@@ -1170,6 +1233,9 @@ void Z80::init_ed_table() {
         reg.hl++; reg.de++; reg.bc--;
         set_hf(false); set_nf(false);
         set_flag(FLAG_P, reg.bc != 0);
+        uint8_t n = reg.a + val;
+        set_flag(FLAG_F5, n & 0x02);  // bit 1 -> flag bit 5
+        set_flag(FLAG_F3, n & 0x08);  // bit 3 -> flag bit 3
         add_ticks(16);
     };
 
@@ -1180,6 +1246,9 @@ void Z80::init_ed_table() {
         reg.hl++; reg.de++; reg.bc--;
         set_hf(false); set_nf(false);
         set_flag(FLAG_P, false);
+        uint8_t n = reg.a + val;
+        set_flag(FLAG_F5, n & 0x02);
+        set_flag(FLAG_F3, n & 0x08);
         if (reg.bc != 0) {
             reg.pc -= 2;  // Repeat instruction
             add_ticks(21);
@@ -1195,6 +1264,9 @@ void Z80::init_ed_table() {
         reg.hl--; reg.de--; reg.bc--;
         set_hf(false); set_nf(false);
         set_flag(FLAG_P, reg.bc != 0);
+        uint8_t n = reg.a + val;
+        set_flag(FLAG_F5, n & 0x02);
+        set_flag(FLAG_F3, n & 0x08);
         add_ticks(16);
     };
 
@@ -1205,6 +1277,9 @@ void Z80::init_ed_table() {
         reg.hl--; reg.de--; reg.bc--;
         set_hf(false); set_nf(false);
         set_flag(FLAG_P, false);
+        uint8_t n = reg.a + val;
+        set_flag(FLAG_F5, n & 0x02);
+        set_flag(FLAG_F3, n & 0x08);
         if (reg.bc != 0) {
             reg.pc -= 2;
             add_ticks(21);
@@ -1217,11 +1292,15 @@ void Z80::init_ed_table() {
     ed_table[0xA1] = [this]() {
         uint8_t val = read_mem(reg.hl);
         uint8_t result = reg.a - val;
+        bool hc = (reg.a & 0x0F) < (val & 0x0F);
         reg.hl++; reg.bc--;
         set_sf(result); set_zf(result);
-        set_hf((reg.a & 0x0F) < (val & 0x0F));
+        set_hf(hc);
         set_nf(true);
         set_flag(FLAG_P, reg.bc != 0);
+        uint8_t n = result - (hc ? 1 : 0);
+        set_flag(FLAG_F5, n & 0x02);
+        set_flag(FLAG_F3, n & 0x08);
         add_ticks(16);
     };
 
@@ -1229,11 +1308,15 @@ void Z80::init_ed_table() {
     ed_table[0xB1] = [this]() {
         uint8_t val = read_mem(reg.hl);
         uint8_t result = reg.a - val;
+        bool hc = (reg.a & 0x0F) < (val & 0x0F);
         reg.hl++; reg.bc--;
         set_sf(result); set_zf(result);
-        set_hf((reg.a & 0x0F) < (val & 0x0F));
+        set_hf(hc);
         set_nf(true);
         set_flag(FLAG_P, reg.bc != 0);
+        uint8_t n = result - (hc ? 1 : 0);
+        set_flag(FLAG_F5, n & 0x02);
+        set_flag(FLAG_F3, n & 0x08);
         if (reg.bc != 0 && result != 0) {
             reg.pc -= 2;
             add_ticks(21);
@@ -1246,11 +1329,15 @@ void Z80::init_ed_table() {
     ed_table[0xA9] = [this]() {
         uint8_t val = read_mem(reg.hl);
         uint8_t result = reg.a - val;
+        bool hc = (reg.a & 0x0F) < (val & 0x0F);
         reg.hl--; reg.bc--;
         set_sf(result); set_zf(result);
-        set_hf((reg.a & 0x0F) < (val & 0x0F));
+        set_hf(hc);
         set_nf(true);
         set_flag(FLAG_P, reg.bc != 0);
+        uint8_t n = result - (hc ? 1 : 0);
+        set_flag(FLAG_F5, n & 0x02);
+        set_flag(FLAG_F3, n & 0x08);
         add_ticks(16);
     };
 
@@ -1258,11 +1345,15 @@ void Z80::init_ed_table() {
     ed_table[0xB9] = [this]() {
         uint8_t val = read_mem(reg.hl);
         uint8_t result = reg.a - val;
+        bool hc = (reg.a & 0x0F) < (val & 0x0F);
         reg.hl--; reg.bc--;
         set_sf(result); set_zf(result);
-        set_hf((reg.a & 0x0F) < (val & 0x0F));
+        set_hf(hc);
         set_nf(true);
         set_flag(FLAG_P, reg.bc != 0);
+        uint8_t n = result - (hc ? 1 : 0);
+        set_flag(FLAG_F5, n & 0x02);
+        set_flag(FLAG_F3, n & 0x08);
         if (reg.bc != 0 && result != 0) {
             reg.pc -= 2;
             add_ticks(21);
@@ -1444,6 +1535,179 @@ void Z80::init_dd_table() {
 
     // LD SP, IX
     dd_table[0xF9] = [this]() { reg.sp = reg.ix; add_ticks(10); };
+
+    // ---- Undocumented IXH/IXL operations ----
+    // INC/DEC IXH/IXL
+    dd_table[0x24] = [this]() { op_inc(reg.ixh); };
+    dd_table[0x25] = [this]() { op_dec(reg.ixh); };
+    dd_table[0x2C] = [this]() { op_inc(reg.ixl); };
+    dd_table[0x2D] = [this]() { op_dec(reg.ixl); };
+
+    // LD IXH/IXL, n
+    dd_table[0x26] = [this]() { reg.ixh = fetch(false); add_ticks(11); };
+    dd_table[0x2E] = [this]() { reg.ixl = fetch(false); add_ticks(11); };
+
+    // LD r, IXH/IXL
+    dd_table[0x44] = [this]() { reg.b = reg.ixh; add_ticks(8); };
+    dd_table[0x45] = [this]() { reg.b = reg.ixl; add_ticks(8); };
+    dd_table[0x4C] = [this]() { reg.c = reg.ixh; add_ticks(8); };
+    dd_table[0x4D] = [this]() { reg.c = reg.ixl; add_ticks(8); };
+    dd_table[0x54] = [this]() { reg.d = reg.ixh; add_ticks(8); };
+    dd_table[0x55] = [this]() { reg.d = reg.ixl; add_ticks(8); };
+    dd_table[0x5C] = [this]() { reg.e = reg.ixh; add_ticks(8); };
+    dd_table[0x5D] = [this]() { reg.e = reg.ixl; add_ticks(8); };
+    dd_table[0x60] = [this]() { reg.ixh = reg.b; add_ticks(8); };
+    dd_table[0x61] = [this]() { reg.ixh = reg.c; add_ticks(8); };
+    dd_table[0x62] = [this]() { reg.ixh = reg.d; add_ticks(8); };
+    dd_table[0x63] = [this]() { reg.ixh = reg.e; add_ticks(8); };
+    dd_table[0x64] = [this]() { add_ticks(8); };  // LD IXH,IXH (nop)
+    dd_table[0x65] = [this]() { reg.ixh = reg.ixl; add_ticks(8); };
+    dd_table[0x67] = [this]() { reg.ixh = reg.a; add_ticks(8); };
+    dd_table[0x68] = [this]() { reg.ixl = reg.b; add_ticks(8); };
+    dd_table[0x69] = [this]() { reg.ixl = reg.c; add_ticks(8); };
+    dd_table[0x6A] = [this]() { reg.ixl = reg.d; add_ticks(8); };
+    dd_table[0x6B] = [this]() { reg.ixl = reg.e; add_ticks(8); };
+    dd_table[0x6C] = [this]() { reg.ixl = reg.ixh; add_ticks(8); };
+    dd_table[0x6D] = [this]() { add_ticks(8); };  // LD IXL,IXL (nop)
+    dd_table[0x6F] = [this]() { reg.ixl = reg.a; add_ticks(8); };
+    dd_table[0x7C] = [this]() { reg.a = reg.ixh; add_ticks(8); };
+    dd_table[0x7D] = [this]() { reg.a = reg.ixl; add_ticks(8); };
+
+    // LD r,r (non-IX variants that still need to work under DD prefix)
+    dd_table[0x40] = [this]() { reg.b = reg.b; add_ticks(8); };
+    dd_table[0x41] = [this]() { reg.b = reg.c; add_ticks(8); };
+    dd_table[0x42] = [this]() { reg.b = reg.d; add_ticks(8); };
+    dd_table[0x43] = [this]() { reg.b = reg.e; add_ticks(8); };
+    dd_table[0x47] = [this]() { reg.b = reg.a; add_ticks(8); };
+    dd_table[0x48] = [this]() { reg.c = reg.b; add_ticks(8); };
+    dd_table[0x49] = [this]() { reg.c = reg.c; add_ticks(8); };
+    dd_table[0x4A] = [this]() { reg.c = reg.d; add_ticks(8); };
+    dd_table[0x4B] = [this]() { reg.c = reg.e; add_ticks(8); };
+    dd_table[0x4F] = [this]() { reg.c = reg.a; add_ticks(8); };
+    dd_table[0x50] = [this]() { reg.d = reg.b; add_ticks(8); };
+    dd_table[0x51] = [this]() { reg.d = reg.c; add_ticks(8); };
+    dd_table[0x52] = [this]() { reg.d = reg.d; add_ticks(8); };
+    dd_table[0x53] = [this]() { reg.d = reg.e; add_ticks(8); };
+    dd_table[0x57] = [this]() { reg.d = reg.a; add_ticks(8); };
+    dd_table[0x58] = [this]() { reg.e = reg.b; add_ticks(8); };
+    dd_table[0x59] = [this]() { reg.e = reg.c; add_ticks(8); };
+    dd_table[0x5A] = [this]() { reg.e = reg.d; add_ticks(8); };
+    dd_table[0x5B] = [this]() { reg.e = reg.e; add_ticks(8); };
+    dd_table[0x5F] = [this]() { reg.e = reg.a; add_ticks(8); };
+    dd_table[0x78] = [this]() { reg.a = reg.b; add_ticks(8); };
+    dd_table[0x79] = [this]() { reg.a = reg.c; add_ticks(8); };
+    dd_table[0x7A] = [this]() { reg.a = reg.d; add_ticks(8); };
+    dd_table[0x7B] = [this]() { reg.a = reg.e; add_ticks(8); };
+    dd_table[0x7F] = [this]() { reg.a = reg.a; add_ticks(8); };
+
+    // ALU with IXH/IXL
+    dd_table[0x84] = [this]() { op_add(reg.ixh); };
+    dd_table[0x85] = [this]() { op_add(reg.ixl); };
+    dd_table[0x8C] = [this]() { op_adc(reg.ixh); };
+    dd_table[0x8D] = [this]() { op_adc(reg.ixl); };
+    dd_table[0x94] = [this]() { op_sub(reg.ixh); };
+    dd_table[0x95] = [this]() { op_sub(reg.ixl); };
+    dd_table[0x9C] = [this]() { op_sbc(reg.ixh); };
+    dd_table[0x9D] = [this]() { op_sbc(reg.ixl); };
+    dd_table[0xA4] = [this]() { op_and(reg.ixh); };
+    dd_table[0xA5] = [this]() { op_and(reg.ixl); };
+    dd_table[0xAC] = [this]() { op_xor(reg.ixh); };
+    dd_table[0xAD] = [this]() { op_xor(reg.ixl); };
+    dd_table[0xB4] = [this]() { op_or(reg.ixh); };
+    dd_table[0xB5] = [this]() { op_or(reg.ixl); };
+    dd_table[0xBC] = [this]() { op_cp(reg.ixh); };
+    dd_table[0xBD] = [this]() { op_cp(reg.ixl); };
+
+    // ---- DD CB prefix (bit ops on IX+d) ----
+    dd_table[0xCB] = [this]() {
+        int8_t d = static_cast<int8_t>(fetch(false));
+        uint8_t op = fetch(false);
+        uint16_t addr = reg.ix + d;
+        uint8_t val = read_mem(addr);
+        
+        if (op < 0x40) {
+            // Shift/rotate operations
+            switch ((op >> 3) & 7) {
+                case 0: op_rlc(val); break;
+                case 1: op_rrc(val); break;
+                case 2: op_rl(val); break;
+                case 3: op_rr(val); break;
+                case 4: op_sl(val); break;
+                case 5: op_sr(val); break;
+                case 6: { // SLL (undocumented) - shift left, bit 0 = 1
+                    bool c = val & 0x80;
+                    val = (val << 1) | 1;
+                    set_cf(c); set_sf(val); set_zf(val); set_hf(false); set_pf(val); set_nf(false); set_f35(val);
+                    add_ticks(8);
+                    break;
+                }
+                case 7: { // SRL
+                    bool c = val & 1;
+                    val >>= 1;
+                    set_cf(c); set_sf(val); set_zf(val); set_hf(false); set_pf(val); set_nf(false); set_f35(val);
+                    add_ticks(8);
+                    break;
+                }
+            }
+            write_mem(addr, val);
+            // Store result in register too (undocumented)
+            uint8_t reg_code = op & 7;
+            if (reg_code != 6) {
+                switch (reg_code) {
+                    case 0: reg.b = val; break;
+                    case 1: reg.c = val; break;
+                    case 2: reg.d = val; break;
+                    case 3: reg.e = val; break;
+                    case 4: reg.h = val; break;
+                    case 5: reg.l = val; break;
+                    case 7: reg.a = val; break;
+                }
+            }
+        } else if (op < 0x80) {
+            // BIT b, (IX+d)
+            uint8_t bit = (op >> 3) & 7;
+            op_bit(bit, val);
+            // For BIT on (IX+d), F3/F5 come from high byte of address
+            set_f35((addr >> 8) & 0xFF);
+        } else if (op < 0xC0) {
+            // RES b, (IX+d)
+            uint8_t bit = (op >> 3) & 7;
+            val &= ~(1 << bit);
+            write_mem(addr, val);
+            uint8_t reg_code = op & 7;
+            if (reg_code != 6) {
+                switch (reg_code) {
+                    case 0: reg.b = val; break;
+                    case 1: reg.c = val; break;
+                    case 2: reg.d = val; break;
+                    case 3: reg.e = val; break;
+                    case 4: reg.h = val; break;
+                    case 5: reg.l = val; break;
+                    case 7: reg.a = val; break;
+                }
+            }
+            add_ticks(8);
+        } else {
+            // SET b, (IX+d)
+            uint8_t bit = (op >> 3) & 7;
+            val |= (1 << bit);
+            write_mem(addr, val);
+            uint8_t reg_code = op & 7;
+            if (reg_code != 6) {
+                switch (reg_code) {
+                    case 0: reg.b = val; break;
+                    case 1: reg.c = val; break;
+                    case 2: reg.d = val; break;
+                    case 3: reg.e = val; break;
+                    case 4: reg.h = val; break;
+                    case 5: reg.l = val; break;
+                    case 7: reg.a = val; break;
+                }
+            }
+            add_ticks(8);
+        }
+        add_ticks(8);  // Extra cycles for DD CB prefix
+    };
 }
 
 void Z80::init_fd_table() {
@@ -1523,4 +1787,175 @@ void Z80::init_fd_table() {
 
     // LD SP, IY
     fd_table[0xF9] = [this]() { reg.sp = reg.iy; add_ticks(10); };
+
+    // ---- Undocumented IYH/IYL operations ----
+    // INC/DEC IYH/IYL
+    fd_table[0x24] = [this]() { op_inc(reg.iyh); };
+    fd_table[0x25] = [this]() { op_dec(reg.iyh); };
+    fd_table[0x2C] = [this]() { op_inc(reg.iyl); };
+    fd_table[0x2D] = [this]() { op_dec(reg.iyl); };
+
+    // LD IYH/IYL, n
+    fd_table[0x26] = [this]() { reg.iyh = fetch(false); add_ticks(11); };
+    fd_table[0x2E] = [this]() { reg.iyl = fetch(false); add_ticks(11); };
+
+    // LD r, IYH/IYL
+    fd_table[0x44] = [this]() { reg.b = reg.iyh; add_ticks(8); };
+    fd_table[0x45] = [this]() { reg.b = reg.iyl; add_ticks(8); };
+    fd_table[0x4C] = [this]() { reg.c = reg.iyh; add_ticks(8); };
+    fd_table[0x4D] = [this]() { reg.c = reg.iyl; add_ticks(8); };
+    fd_table[0x54] = [this]() { reg.d = reg.iyh; add_ticks(8); };
+    fd_table[0x55] = [this]() { reg.d = reg.iyl; add_ticks(8); };
+    fd_table[0x5C] = [this]() { reg.e = reg.iyh; add_ticks(8); };
+    fd_table[0x5D] = [this]() { reg.e = reg.iyl; add_ticks(8); };
+    fd_table[0x60] = [this]() { reg.iyh = reg.b; add_ticks(8); };
+    fd_table[0x61] = [this]() { reg.iyh = reg.c; add_ticks(8); };
+    fd_table[0x62] = [this]() { reg.iyh = reg.d; add_ticks(8); };
+    fd_table[0x63] = [this]() { reg.iyh = reg.e; add_ticks(8); };
+    fd_table[0x64] = [this]() { add_ticks(8); };  // LD IYH,IYH (nop)
+    fd_table[0x65] = [this]() { reg.iyh = reg.iyl; add_ticks(8); };
+    fd_table[0x67] = [this]() { reg.iyh = reg.a; add_ticks(8); };
+    fd_table[0x68] = [this]() { reg.iyl = reg.b; add_ticks(8); };
+    fd_table[0x69] = [this]() { reg.iyl = reg.c; add_ticks(8); };
+    fd_table[0x6A] = [this]() { reg.iyl = reg.d; add_ticks(8); };
+    fd_table[0x6B] = [this]() { reg.iyl = reg.e; add_ticks(8); };
+    fd_table[0x6C] = [this]() { reg.iyl = reg.iyh; add_ticks(8); };
+    fd_table[0x6D] = [this]() { add_ticks(8); };  // LD IYL,IYL (nop)
+    fd_table[0x6F] = [this]() { reg.iyl = reg.a; add_ticks(8); };
+    fd_table[0x7C] = [this]() { reg.a = reg.iyh; add_ticks(8); };
+    fd_table[0x7D] = [this]() { reg.a = reg.iyl; add_ticks(8); };
+
+    // LD r,r (non-IY variants that still need to work under FD prefix)
+    fd_table[0x40] = [this]() { reg.b = reg.b; add_ticks(8); };
+    fd_table[0x41] = [this]() { reg.b = reg.c; add_ticks(8); };
+    fd_table[0x42] = [this]() { reg.b = reg.d; add_ticks(8); };
+    fd_table[0x43] = [this]() { reg.b = reg.e; add_ticks(8); };
+    fd_table[0x47] = [this]() { reg.b = reg.a; add_ticks(8); };
+    fd_table[0x48] = [this]() { reg.c = reg.b; add_ticks(8); };
+    fd_table[0x49] = [this]() { reg.c = reg.c; add_ticks(8); };
+    fd_table[0x4A] = [this]() { reg.c = reg.d; add_ticks(8); };
+    fd_table[0x4B] = [this]() { reg.c = reg.e; add_ticks(8); };
+    fd_table[0x4F] = [this]() { reg.c = reg.a; add_ticks(8); };
+    fd_table[0x50] = [this]() { reg.d = reg.b; add_ticks(8); };
+    fd_table[0x51] = [this]() { reg.d = reg.c; add_ticks(8); };
+    fd_table[0x52] = [this]() { reg.d = reg.d; add_ticks(8); };
+    fd_table[0x53] = [this]() { reg.d = reg.e; add_ticks(8); };
+    fd_table[0x57] = [this]() { reg.d = reg.a; add_ticks(8); };
+    fd_table[0x58] = [this]() { reg.e = reg.b; add_ticks(8); };
+    fd_table[0x59] = [this]() { reg.e = reg.c; add_ticks(8); };
+    fd_table[0x5A] = [this]() { reg.e = reg.d; add_ticks(8); };
+    fd_table[0x5B] = [this]() { reg.e = reg.e; add_ticks(8); };
+    fd_table[0x5F] = [this]() { reg.e = reg.a; add_ticks(8); };
+    fd_table[0x78] = [this]() { reg.a = reg.b; add_ticks(8); };
+    fd_table[0x79] = [this]() { reg.a = reg.c; add_ticks(8); };
+    fd_table[0x7A] = [this]() { reg.a = reg.d; add_ticks(8); };
+    fd_table[0x7B] = [this]() { reg.a = reg.e; add_ticks(8); };
+    fd_table[0x7F] = [this]() { reg.a = reg.a; add_ticks(8); };
+
+    // ALU with IYH/IYL
+    fd_table[0x84] = [this]() { op_add(reg.iyh); };
+    fd_table[0x85] = [this]() { op_add(reg.iyl); };
+    fd_table[0x8C] = [this]() { op_adc(reg.iyh); };
+    fd_table[0x8D] = [this]() { op_adc(reg.iyl); };
+    fd_table[0x94] = [this]() { op_sub(reg.iyh); };
+    fd_table[0x95] = [this]() { op_sub(reg.iyl); };
+    fd_table[0x9C] = [this]() { op_sbc(reg.iyh); };
+    fd_table[0x9D] = [this]() { op_sbc(reg.iyl); };
+    fd_table[0xA4] = [this]() { op_and(reg.iyh); };
+    fd_table[0xA5] = [this]() { op_and(reg.iyl); };
+    fd_table[0xAC] = [this]() { op_xor(reg.iyh); };
+    fd_table[0xAD] = [this]() { op_xor(reg.iyl); };
+    fd_table[0xB4] = [this]() { op_or(reg.iyh); };
+    fd_table[0xB5] = [this]() { op_or(reg.iyl); };
+    fd_table[0xBC] = [this]() { op_cp(reg.iyh); };
+    fd_table[0xBD] = [this]() { op_cp(reg.iyl); };
+
+    // ---- FD CB prefix (bit ops on IY+d) ----
+    fd_table[0xCB] = [this]() {
+        int8_t d = static_cast<int8_t>(fetch(false));
+        uint8_t op = fetch(false);
+        uint16_t addr = reg.iy + d;
+        uint8_t val = read_mem(addr);
+        
+        if (op < 0x40) {
+            // Shift/rotate operations
+            switch ((op >> 3) & 7) {
+                case 0: op_rlc(val); break;
+                case 1: op_rrc(val); break;
+                case 2: op_rl(val); break;
+                case 3: op_rr(val); break;
+                case 4: op_sl(val); break;
+                case 5: op_sr(val); break;
+                case 6: { // SLL (undocumented)
+                    bool c = val & 0x80;
+                    val = (val << 1) | 1;
+                    set_cf(c); set_sf(val); set_zf(val); set_hf(false); set_pf(val); set_nf(false); set_f35(val);
+                    add_ticks(8);
+                    break;
+                }
+                case 7: { // SRL
+                    bool c = val & 1;
+                    val >>= 1;
+                    set_cf(c); set_sf(val); set_zf(val); set_hf(false); set_pf(val); set_nf(false); set_f35(val);
+                    add_ticks(8);
+                    break;
+                }
+            }
+            write_mem(addr, val);
+            uint8_t reg_code = op & 7;
+            if (reg_code != 6) {
+                switch (reg_code) {
+                    case 0: reg.b = val; break;
+                    case 1: reg.c = val; break;
+                    case 2: reg.d = val; break;
+                    case 3: reg.e = val; break;
+                    case 4: reg.h = val; break;
+                    case 5: reg.l = val; break;
+                    case 7: reg.a = val; break;
+                }
+            }
+        } else if (op < 0x80) {
+            // BIT b, (IY+d)
+            uint8_t bit = (op >> 3) & 7;
+            op_bit(bit, val);
+            set_f35((addr >> 8) & 0xFF);
+        } else if (op < 0xC0) {
+            // RES b, (IY+d)
+            uint8_t bit = (op >> 3) & 7;
+            val &= ~(1 << bit);
+            write_mem(addr, val);
+            uint8_t reg_code = op & 7;
+            if (reg_code != 6) {
+                switch (reg_code) {
+                    case 0: reg.b = val; break;
+                    case 1: reg.c = val; break;
+                    case 2: reg.d = val; break;
+                    case 3: reg.e = val; break;
+                    case 4: reg.h = val; break;
+                    case 5: reg.l = val; break;
+                    case 7: reg.a = val; break;
+                }
+            }
+            add_ticks(8);
+        } else {
+            // SET b, (IY+d)
+            uint8_t bit = (op >> 3) & 7;
+            val |= (1 << bit);
+            write_mem(addr, val);
+            uint8_t reg_code = op & 7;
+            if (reg_code != 6) {
+                switch (reg_code) {
+                    case 0: reg.b = val; break;
+                    case 1: reg.c = val; break;
+                    case 2: reg.d = val; break;
+                    case 3: reg.e = val; break;
+                    case 4: reg.h = val; break;
+                    case 5: reg.l = val; break;
+                    case 7: reg.a = val; break;
+                }
+            }
+            add_ticks(8);
+        }
+        add_ticks(8);
+    };
 }
