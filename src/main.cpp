@@ -39,35 +39,32 @@ static std::string extract_filename(const Bus& bus) {
 // If filename is empty (bare CLOAD), pick the first .cas alphabetically.
 static std::string find_cas_file(const std::string& filename) {
     namespace fs = std::filesystem;
+    std::cout << "[CLOAD] Searching for filename: '" << filename << "'" << std::endl;
     if (!fs::exists("software")) return "";
 
-    if (filename.empty()) {
-        // Bare CLOAD — pick first .cas file alphabetically
-        std::vector<std::string> cas_files;
-        for (auto& e : fs::directory_iterator("software")) {
-            if (!e.is_regular_file()) continue;
-            std::string ext = e.path().extension().string();
-            std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
-            if (ext == ".cas") cas_files.push_back(e.path().string());
-        }
-        if (cas_files.empty()) return "";
-        std::sort(cas_files.begin(), cas_files.end());
-        return cas_files.front();
-    }
-
-    // Try lowercase name
+    std::vector<std::string> cas_files;
     std::string lower = filename;
     std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
-    std::string path = "software/" + lower + ".cas";
-    if (fs::exists(path)) return path;
 
-    // Try uppercase name
-    std::string upper = filename;
-    std::transform(upper.begin(), upper.end(), upper.begin(), ::toupper);
-    path = "software/" + upper + ".cas";
-    if (fs::exists(path)) return path;
-
-    return "";
+    for (auto& e : fs::directory_iterator("software")) {
+        if (!e.is_regular_file()) continue;
+        std::string ext = e.path().extension().string();
+        std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
+        if (ext != ".cas") continue;
+        std::string fname = e.path().stem().string();
+        std::string fname_lower = fname;
+        std::transform(fname_lower.begin(), fname_lower.end(), fname_lower.begin(), ::tolower);
+        if (lower.empty() || fname_lower.find(lower) == 0) {
+            cas_files.push_back(e.path().string());
+        }
+    }
+    if (cas_files.empty()) {
+        std::cout << "[CLOAD] No matching .cas file found for: '" << filename << "'" << std::endl;
+        return "";
+    }
+    std::sort(cas_files.begin(), cas_files.end());
+    std::cout << "[CLOAD] Partial match, picking: '" << cas_files.front() << "'" << std::endl;
+    return cas_files.front();
 }
 
 static void crash_handler(int sig) {
