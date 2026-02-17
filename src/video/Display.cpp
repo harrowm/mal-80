@@ -257,108 +257,168 @@ bool Display::handle_events(uint8_t* keyboard_matrix) {
         
         if (event.type == SDL_KEYDOWN || event.type == SDL_KEYUP) {
             bool pressed = (event.type == SDL_KEYDOWN);
-            SDL_Keysym ks = event.key.keysym;
-            fprintf(stderr, "KEY %s: sym=0x%X (%s) scancode=%d mod=0x%04X\n",
-                    pressed ? "DOWN" : "UP  ",
-                    ks.sym, SDL_GetKeyName(ks.sym), ks.scancode, ks.mod);
+            SDL_Scancode sc = event.key.keysym.scancode;
+            bool host_shifted = (event.key.keysym.mod & KMOD_SHIFT) != 0;
             
-            // Map SDL keys to TRS-80 keyboard matrix
-            // TRS-80 Model I keyboard matrix (active low):
-            // Address bits select rows, data bits are columns (D0-D7)
-            // Row 0 (0x3801): @ A B C D E F G
-            // Row 1 (0x3802): H I J K L M N O
-            // Row 2 (0x3804): P Q R S T U V W
-            // Row 3 (0x3808): X Y Z
-            // Row 4 (0x3810): 0 1 2 3 4 5 6 7
-            // Row 5 (0x3820): 8 9 : ; , - . /
-            // Row 6 (0x3840): ENTER CLEAR BREAK UP DOWN LEFT RIGHT SPACE
-            // Row 7 (0x3880): SHIFT
+            // TRS-80 Model I keyboard matrix (active high):
+            // Row 0: @ A B C D E F G
+            // Row 1: H I J K L M N O
+            // Row 2: P Q R S T U V W
+            // Row 3: X Y Z
+            // Row 4: 0 1 2 3 4 5 6 7
+            // Row 5: 8 9 : ; , - . /
+            // Row 6: ENTER CLEAR BREAK UP DOWN LEFT RIGHT SPACE
+            // Row 7: SHIFT
             
-            uint8_t row = 0xFF;  // Unmapped by default
-            uint8_t col = 0;
-            
-            switch (event.key.keysym.sym) {
-                // Row 0: @ A B C D E F G
-                case SDLK_AT:        row = 0; col = 0; break;
-                case SDLK_a:         row = 0; col = 1; break;
-                case SDLK_b:         row = 0; col = 2; break;
-                case SDLK_c:         row = 0; col = 3; break;
-                case SDLK_d:         row = 0; col = 4; break;
-                case SDLK_e:         row = 0; col = 5; break;
-                case SDLK_f:         row = 0; col = 6; break;
-                case SDLK_g:         row = 0; col = 7; break;
-                
-                // Row 1: H I J K L M N O
-                case SDLK_h:         row = 1; col = 0; break;
-                case SDLK_i:         row = 1; col = 1; break;
-                case SDLK_j:         row = 1; col = 2; break;
-                case SDLK_k:         row = 1; col = 3; break;
-                case SDLK_l:         row = 1; col = 4; break;
-                case SDLK_m:         row = 1; col = 5; break;
-                case SDLK_n:         row = 1; col = 6; break;
-                case SDLK_o:         row = 1; col = 7; break;
-                
-                // Row 2: P Q R S T U V W
-                case SDLK_p:         row = 2; col = 0; break;
-                case SDLK_q:         row = 2; col = 1; break;
-                case SDLK_r:         row = 2; col = 2; break;
-                case SDLK_s:         row = 2; col = 3; break;
-                case SDLK_t:         row = 2; col = 4; break;
-                case SDLK_u:         row = 2; col = 5; break;
-                case SDLK_v:         row = 2; col = 6; break;
-                case SDLK_w:         row = 2; col = 7; break;
-                
-                // Row 3: X Y Z
-                case SDLK_x:         row = 3; col = 0; break;
-                case SDLK_y:         row = 3; col = 1; break;
-                case SDLK_z:         row = 3; col = 2; break;
-                
-                // Row 4: 0 1 2 3 4 5 6 7
-                case SDLK_0:         row = 4; col = 0; break;
-                case SDLK_1:         row = 4; col = 1; break;
-                case SDLK_2:         row = 4; col = 2; break;
-                case SDLK_3:         row = 4; col = 3; break;
-                case SDLK_4:         row = 4; col = 4; break;
-                case SDLK_5:         row = 4; col = 5; break;
-                case SDLK_6:         row = 4; col = 6; break;
-                case SDLK_7:         row = 4; col = 7; break;
-                
-                // Row 5: 8 9 : ; , - . /
-                case SDLK_8:         row = 5; col = 0; break;
-                case SDLK_9:         row = 5; col = 1; break;
-                case SDLK_COLON:     row = 5; col = 2; break;
-                case SDLK_SEMICOLON: row = 5; col = 3; break;
-                case SDLK_COMMA:     row = 5; col = 4; break;
-                case SDLK_MINUS:     row = 5; col = 5; break;
-                case SDLK_PERIOD:    row = 5; col = 6; break;
-                case SDLK_SLASH:     row = 5; col = 7; break;
-                
-                // Row 6: ENTER CLEAR BREAK UP DOWN LEFT RIGHT SPACE
-                case SDLK_RETURN:    row = 6; col = 0; break;
-                case SDLK_BACKSPACE: row = 6; col = 1; break;  // CLEAR
-                case SDLK_ESCAPE:    row = 6; col = 2; break;  // BREAK
-                case SDLK_UP:        row = 6; col = 3; break;
-                case SDLK_DOWN:      row = 6; col = 4; break;
-                case SDLK_LEFT:      row = 6; col = 5; break;
-                case SDLK_RIGHT:     row = 6; col = 6; break;
-                case SDLK_SPACE:     row = 6; col = 7; break;
-                
-                // Row 7: SHIFT
-                case SDLK_LSHIFT:
-                case SDLK_RSHIFT:    row = 7; col = 0; break;
-                
-                default: break;
+            // Handle shift key directly
+            if (sc == SDL_SCANCODE_LSHIFT || sc == SDL_SCANCODE_RSHIFT) {
+                physical_shift_held = pressed;
+                if (synthetic_shift_count == 0) {
+                    if (physical_shift_held)
+                        keyboard_matrix[7] |= 0x01;
+                    else
+                        keyboard_matrix[7] &= ~0x01;
+                }
+                continue;
             }
             
-            if (row < 8 && col < 8) {
-                fprintf(stderr, "  -> TRS-80 row=%d col=%d %s\n", row, col, pressed ? "PRESS" : "RELEASE");
-                if (pressed) {
-                    keyboard_matrix[row] |= (1 << col);   // Set bit (active high)
-                } else {
-                    keyboard_matrix[row] &= ~(1 << col);  // Clear bit
+            // On key-up, look up what we stored on key-down and undo it
+            if (!pressed) {
+                auto it = active_keys.find((int)sc);
+                if (it != active_keys.end()) {
+                    auto& m = it->second;
+                    keyboard_matrix[m.row] &= ~(1 << m.col);
+                    if (m.shift_override != 0) {
+                        synthetic_shift_count--;
+                        if (synthetic_shift_count <= 0) {
+                            synthetic_shift_count = 0;
+                            if (physical_shift_held)
+                                keyboard_matrix[7] |= 0x01;
+                            else
+                                keyboard_matrix[7] &= ~0x01;
+                        }
+                    }
+                    active_keys.erase(it);
+                }
+                continue;
+            }
+            
+            // KEY-DOWN: compute TRS-80 mapping
+            uint8_t row = 0xFF;
+            uint8_t col = 0;
+            int shift_override = 0;  // 0=pass-through, 1=force on, -1=force off
+            
+            // Special Mac-to-TRS-80 symbol remappings
+            // These keys produce different symbols on Mac vs TRS-80 when shifted
+            if (host_shifted) {
+                switch (sc) {
+                    case SDL_SCANCODE_2:         // Mac '@' → TRS-80 @ (row 0 col 0, no shift)
+                        row = 0; col = 0; shift_override = -1; break;
+                    case SDL_SCANCODE_6:         // Mac '^' → TRS-80 UP arrow
+                        row = 6; col = 3; shift_override = -1; break;
+                    case SDL_SCANCODE_7:         // Mac '&' → TRS-80 Shift+6
+                        row = 4; col = 6; shift_override = 1; break;
+                    case SDL_SCANCODE_8:         // Mac '*' → TRS-80 Shift+: (colon)
+                        row = 5; col = 2; shift_override = 1; break;
+                    case SDL_SCANCODE_9:         // Mac '(' → TRS-80 Shift+8
+                        row = 5; col = 0; shift_override = 1; break;
+                    case SDL_SCANCODE_0:         // Mac ')' → TRS-80 Shift+9
+                        row = 5; col = 1; shift_override = 1; break;
+                    case SDL_SCANCODE_MINUS:     // Mac '_' → no TRS-80 equiv, ignore
+                        break;
+                    case SDL_SCANCODE_EQUALS:    // Mac '+' → TRS-80 Shift+;
+                        row = 5; col = 3; shift_override = 1; break;
+                    case SDL_SCANCODE_SEMICOLON: // Mac ':' → TRS-80 : (no shift)
+                        row = 5; col = 2; shift_override = -1; break;
+                    case SDL_SCANCODE_APOSTROPHE:// Mac '"' → TRS-80 Shift+2
+                        row = 4; col = 2; shift_override = 1; break;
+                    default: break;
                 }
             } else {
-                fprintf(stderr, "  -> UNMAPPED\n");
+                switch (sc) {
+                    case SDL_SCANCODE_EQUALS:    // Mac '=' → TRS-80 Shift+-
+                        row = 5; col = 5; shift_override = 1; break;
+                    case SDL_SCANCODE_APOSTROPHE:// Mac '\'' → TRS-80 Shift+7
+                        row = 4; col = 7; shift_override = 1; break;
+                    default: break;
+                }
+            }
+            
+            // Standard scancode mapping (if not already handled above)
+            if (row == 0xFF) {
+                switch (sc) {
+                    // Row 0: @ A B C D E F G
+                    case SDL_SCANCODE_A: row = 0; col = 1; break;
+                    case SDL_SCANCODE_B: row = 0; col = 2; break;
+                    case SDL_SCANCODE_C: row = 0; col = 3; break;
+                    case SDL_SCANCODE_D: row = 0; col = 4; break;
+                    case SDL_SCANCODE_E: row = 0; col = 5; break;
+                    case SDL_SCANCODE_F: row = 0; col = 6; break;
+                    case SDL_SCANCODE_G: row = 0; col = 7; break;
+                    // Row 1: H I J K L M N O
+                    case SDL_SCANCODE_H: row = 1; col = 0; break;
+                    case SDL_SCANCODE_I: row = 1; col = 1; break;
+                    case SDL_SCANCODE_J: row = 1; col = 2; break;
+                    case SDL_SCANCODE_K: row = 1; col = 3; break;
+                    case SDL_SCANCODE_L: row = 1; col = 4; break;
+                    case SDL_SCANCODE_M: row = 1; col = 5; break;
+                    case SDL_SCANCODE_N: row = 1; col = 6; break;
+                    case SDL_SCANCODE_O: row = 1; col = 7; break;
+                    // Row 2: P Q R S T U V W
+                    case SDL_SCANCODE_P: row = 2; col = 0; break;
+                    case SDL_SCANCODE_Q: row = 2; col = 1; break;
+                    case SDL_SCANCODE_R: row = 2; col = 2; break;
+                    case SDL_SCANCODE_S: row = 2; col = 3; break;
+                    case SDL_SCANCODE_T: row = 2; col = 4; break;
+                    case SDL_SCANCODE_U: row = 2; col = 5; break;
+                    case SDL_SCANCODE_V: row = 2; col = 6; break;
+                    case SDL_SCANCODE_W: row = 2; col = 7; break;
+                    // Row 3: X Y Z
+                    case SDL_SCANCODE_X: row = 3; col = 0; break;
+                    case SDL_SCANCODE_Y: row = 3; col = 1; break;
+                    case SDL_SCANCODE_Z: row = 3; col = 2; break;
+                    // Row 4: 0 1 2 3 4 5 6 7
+                    case SDL_SCANCODE_0: row = 4; col = 0; break;
+                    case SDL_SCANCODE_1: row = 4; col = 1; break;
+                    case SDL_SCANCODE_2: row = 4; col = 2; break;
+                    case SDL_SCANCODE_3: row = 4; col = 3; break;
+                    case SDL_SCANCODE_4: row = 4; col = 4; break;
+                    case SDL_SCANCODE_5: row = 4; col = 5; break;
+                    case SDL_SCANCODE_6: row = 4; col = 6; break;
+                    case SDL_SCANCODE_7: row = 4; col = 7; break;
+                    // Row 5: 8 9 : ; , - . /
+                    case SDL_SCANCODE_8:         row = 5; col = 0; break;
+                    case SDL_SCANCODE_9:         row = 5; col = 1; break;
+                    case SDL_SCANCODE_SEMICOLON: row = 5; col = 3; break;
+                    case SDL_SCANCODE_COMMA:     row = 5; col = 4; break;
+                    case SDL_SCANCODE_MINUS:     row = 5; col = 5; break;
+                    case SDL_SCANCODE_PERIOD:    row = 5; col = 6; break;
+                    case SDL_SCANCODE_SLASH:     row = 5; col = 7; break;
+                    // Row 6: ENTER CLEAR BREAK UP DOWN LEFT RIGHT SPACE
+                    case SDL_SCANCODE_RETURN:    row = 6; col = 0; break;
+                    case SDL_SCANCODE_HOME:      row = 6; col = 1; break; // CLEAR
+                    case SDL_SCANCODE_ESCAPE:    row = 6; col = 2; break; // BREAK
+                    case SDL_SCANCODE_UP:        row = 6; col = 3; break;
+                    case SDL_SCANCODE_DOWN:      row = 6; col = 4; break;
+                    case SDL_SCANCODE_BACKSPACE: row = 6; col = 5; break; // LEFT ARROW
+                    case SDL_SCANCODE_LEFT:      row = 6; col = 5; break;
+                    case SDL_SCANCODE_RIGHT:     row = 6; col = 6; break;
+                    case SDL_SCANCODE_SPACE:     row = 6; col = 7; break;
+                    default: break;
+                }
+            }
+            
+            if (row < 8) {
+                // Store mapping so key-up can undo it exactly
+                active_keys[(int)sc] = {row, col, shift_override};
+                keyboard_matrix[row] |= (1 << col);
+                if (shift_override == 1) {
+                    synthetic_shift_count++;
+                    keyboard_matrix[7] |= 0x01;
+                } else if (shift_override == -1) {
+                    synthetic_shift_count++;
+                    keyboard_matrix[7] &= ~0x01;
+                }
             }
         }
     }

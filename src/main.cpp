@@ -1,11 +1,24 @@
 // src/main.cpp
 #include <iostream>
+#include <signal.h>
+#include <execinfo.h>
 #include <SDL.h>
 #include "cpu/z80.hpp"
 #include "system/Bus.hpp"
 #include "video/Display.hpp"
 
+static void crash_handler(int sig) {
+    void* bt[32];
+    int n = backtrace(bt, 32);
+    fprintf(stderr, "\n=== CRASH: signal %d ===\n", sig);
+    backtrace_symbols_fd(bt, n, 2);
+    _exit(1);
+}
+
 int main(int /*argc*/, char* /*argv*/[]) {
+    signal(SIGSEGV, crash_handler);
+    signal(SIGBUS, crash_handler);
+    signal(SIGABRT, crash_handler);
     std::cout << "╔════════════════════════════════════════╗" << std::endl;
     std::cout << "║         Welcome to Mal-80              ║" << std::endl;
     std::cout << "║      TRS-80 Model I Emulator           ║" << std::endl;

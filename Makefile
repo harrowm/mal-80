@@ -2,7 +2,7 @@
 
 CXX = clang++
 CXXSTD = -std=c++20
-OPT = -O3
+OPT = -O0 -g
 WARN = -Wall -Wextra
 
 SRC_DIR = src

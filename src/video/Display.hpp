@@ -4,6 +4,7 @@
 #include <array>
 #include <cstdint>
 #include <string>
+#include <unordered_map>
 
 // Forward declaration
 class Bus;
@@ -101,4 +102,16 @@ private:
     // =========================================================================
     uint8_t keyboard_matrix[8];
     void init_keyboard_matrix();
+    
+    // Mac-to-TRS-80 shift remapping state
+    bool physical_shift_held = false;
+    int synthetic_shift_count = 0;
+    
+    // Track active key mappings so key-up undoes exactly what key-down did
+    struct TRS80KeyMapping {
+        uint8_t row;
+        uint8_t col;
+        int shift_override;  // 0=none, 1=forced on, -1=forced off
+    };
+    std::unordered_map<int, TRS80KeyMapping> active_keys;  // keyed by SDL scancode
 };
