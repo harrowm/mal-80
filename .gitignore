@@ -10,6 +10,9 @@ zexall_test
 roms/*.rom
 roms/*.cas
 
+# Software / CAS files (user content)
+software/
+
 # Downloaded test binaries
 tests/zexall/*.com
 

@@ -2,6 +2,7 @@
 #pragma once
 #include <array>
 #include <cstdint>
+#include <string>
 #include <vector>
 
 // ============================================================================
@@ -28,6 +29,17 @@ constexpr uint16_t VRAM_SIZE     = 0x0400;  // 1KB
 constexpr uint16_t RAM_START     = 0x4000;
 constexpr uint16_t RAM_END       = 0xFFFF;
 constexpr uint16_t RAM_SIZE      = 0xC000;  // 48KB max
+
+// ============================================================================
+// CASSETTE TIMING CONSTANTS (500 baud FSK at 1.77408 MHz)
+// ============================================================================
+constexpr uint64_t CAS_BIT_PERIOD    = 3548;   // T-states per bit at 500 baud
+constexpr uint64_t CAS_HALF_0        = 1774;   // Half-period for bit=0 signal
+constexpr uint64_t CAS_HALF_1        = 887;    // Half-period for bit=1 signal
+constexpr uint64_t CAS_CYCLE_THRESH  = 2600;   // Threshold to distinguish short/long cycles
+constexpr uint64_t CAS_IDLE_TIMEOUT  = 200000; // ~113ms idle → stop recording
+
+enum class CassetteState { IDLE, PLAYING, RECORDING };
 
 constexpr uint16_t VIDEO_SCANLINE_START = 48;   // First visible scanline
 constexpr uint16_t VIDEO_SCANLINE_END   = 48 + 192; // End of visible area
@@ -64,6 +76,30 @@ public:
     uint8_t read_port(uint8_t port);
     void write_port(uint8_t port, uint8_t val);
 
+    // Cassette File Operations
+    bool load_cas_file(const std::string& path);
+    bool save_cas_file(const std::string& path);
+    void start_playback();
+    void start_recording();
+    void stop_cassette();
+    CassetteState get_cassette_state() const { return cas_state; }
+    void set_cas_filename(const std::string& name) { cas_filename = name; }
+    const std::string& get_cas_filename() const { return cas_filename; }
+    std::string get_cassette_status() const;
+    bool is_recording_idle() const;   // True if recording but no activity for timeout
+    bool is_playback_done() const;    // True if playback data exhausted
+
+    // Cassette diagnostic accessors
+    const std::vector<uint8_t>& get_cas_data() const { return cas_data; }
+    uint64_t get_cas_playback_start() const { return cas_playback_start_t; }
+    // Compute which byte/bit the FSK signal is currently at
+    void get_cas_position(size_t& byte_idx, int& bit_idx, bool& expected_bit) const;
+    // Realign CAS clock so current time sits at the start of the next byte
+    void realign_cas_clock();
+
+    // Side-effect-free memory read (for filename extraction)
+    uint8_t peek(uint16_t addr) const;
+
     // Memory Access for Debugging
     const std::array<uint8_t, ROM_SIZE>& get_rom() const { return rom; }
     const std::array<uint8_t, RAM_SIZE>& get_ram() const { return ram; }
@@ -93,8 +129,32 @@ private:
     // =========================================================================
     // CASSETTE STATE
     // =========================================================================
-    bool cassette_motor_on = false;
-    uint8_t cassette_data_out = 0;
+    CassetteState cas_state = CassetteState::IDLE;
+    std::string cas_filename;               // Current filename (trimmed)
+
+    // Playback (CLOAD)
+    std::vector<uint8_t> cas_data;          // CAS file contents
+    uint64_t cas_playback_start_t = 0;      // T-state when playback started
+
+    // Recording (CSAVE)
+    std::vector<uint8_t> cas_rec_data;      // Recorded bytes
+    uint64_t cas_last_cycle_t = 0;          // T-state of last cycle-start edge
+    int cas_rec_cycle_count = 0;            // Cycles since last bit decoded
+    uint8_t cas_rec_byte = 0;              // Byte being assembled
+    int cas_rec_bit_count = 0;             // Bits assembled (0-7)
+    uint8_t cas_prev_port_val = 0;         // Previous port 0xFF value
+    uint64_t cas_last_activity_t = 0;      // Last port write T-state
+
+    // Diagnostic
+    int cas_port_read_log_count = 0;       // Port read log limiter
+    mutable size_t cas_last_logged_byte = SIZE_MAX; // Last byte position logged
+
+    // Cassette signal helpers
+    bool get_cassette_signal() const;       // Compute bit 7 for playback
+    void on_cassette_write(uint8_t val);    // Handle port write for recording
+    void on_cycle_start();                  // Cycle-start edge detected
+    void record_bit(bool bit);             // Accumulate one decoded bit
+    void flush_recording();                // Flush partial byte + save file
 
     // =========================================================================
     // VIDEO CONTENTION LOGIC
