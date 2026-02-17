@@ -36,6 +36,50 @@ run: $(TARGET)
 	./$(TARGET)
 
 clean:
-	rm -rf $(BUILD_DIR) $(TARGET)
+	rm -rf $(BUILD_DIR) $(TARGET) zexall_test
 
-.PHONY: all clean run
+# ============================================================================
+# ZEXALL Z80 Test Runner
+# ============================================================================
+TEST_DIR = tests/zexall
+TEST_BUILD_DIR = $(BUILD_DIR)/tests/zexall
+TEST_TARGET = zexall_test
+
+# Test sources: test harness + Z80 CPU + Bus (no SDL, no Display)
+TEST_SOURCES = $(TEST_DIR)/main.cpp $(SRC_DIR)/cpu/z80.cpp $(SRC_DIR)/system/Bus.cpp
+TEST_OBJECTS = $(TEST_BUILD_DIR)/main.o $(TEST_BUILD_DIR)/z80.o $(TEST_BUILD_DIR)/Bus.o
+TEST_CXXFLAGS = $(CXXSTD) -O2 -g $(WARN) -arch arm64
+
+$(TEST_BUILD_DIR):
+	mkdir -p $(TEST_BUILD_DIR)
+
+$(TEST_BUILD_DIR)/main.o: $(TEST_DIR)/main.cpp | $(TEST_BUILD_DIR)
+	$(CXX) $(TEST_CXXFLAGS) -c $< -o $@
+
+$(TEST_BUILD_DIR)/z80.o: $(SRC_DIR)/cpu/z80.cpp | $(TEST_BUILD_DIR)
+	$(CXX) $(TEST_CXXFLAGS) -c $< -o $@
+
+$(TEST_BUILD_DIR)/Bus.o: $(SRC_DIR)/system/Bus.cpp | $(TEST_BUILD_DIR)
+	$(CXX) $(TEST_CXXFLAGS) -c $< -o $@
+
+$(TEST_TARGET): $(TEST_OBJECTS)
+	$(CXX) $(TEST_OBJECTS) -o $@ -arch arm64
+
+# Download ZEXALL/ZEXDOC binaries from mdfs.net (CP/M zip archive)
+ZEXALL_URL = https://mdfs.net/Software/Z80/Exerciser/CPM.zip
+
+$(TEST_DIR)/zexall.com $(TEST_DIR)/zexdoc.com:
+	@echo "Downloading Z80 Exerciser binaries..."
+	@mkdir -p $(TEST_DIR)
+	curl -L -o /tmp/cpm_zex.zip $(ZEXALL_URL)
+	unzip -o /tmp/cpm_zex.zip zexall.com zexdoc.com -d $(TEST_DIR)
+	@rm -f /tmp/cpm_zex.zip
+	@echo "Downloaded zexall.com and zexdoc.com"
+
+zexall: $(TEST_TARGET) $(TEST_DIR)/zexall.com
+	./$(TEST_TARGET) $(TEST_DIR)/zexall.com
+
+zexdoc: $(TEST_TARGET) $(TEST_DIR)/zexdoc.com
+	./$(TEST_TARGET) $(TEST_DIR)/zexdoc.com
+
+.PHONY: all clean run zexall zexdoc

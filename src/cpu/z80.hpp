@@ -26,6 +26,20 @@ public:
     uint16_t get_pc() const { return reg.pc; }
     uint16_t get_sp() const { return reg.sp; }
     uint8_t get_a() const { return reg.a; }
+    uint8_t get_f() const { return reg.f; }
+    uint8_t get_b() const { return reg.b; }
+    uint8_t get_c() const { return reg.c; }
+    uint8_t get_d() const { return reg.d; }
+    uint8_t get_e() const { return reg.e; }
+    uint8_t get_h() const { return reg.h; }
+    uint8_t get_l() const { return reg.l; }
+    uint16_t get_bc() const { return reg.bc; }
+    uint16_t get_de() const { return reg.de; }
+    uint16_t get_hl() const { return reg.hl; }
+
+    // Debug mutation (for test harnesses)
+    void set_pc(uint16_t val) { reg.pc = val; }
+    void set_sp(uint16_t val) { reg.sp = val; }
 
 private:
     // ------------------------------------------------------------------------

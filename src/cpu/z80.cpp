@@ -98,8 +98,8 @@ uint8_t Z80::read_mem(uint16_t addr, bool is_m1) {
 }
 
 void Z80::write_mem(uint16_t addr, uint8_t val) {
-    // Trace VRAM writes
-    if (addr >= 0x3C00 && addr <= 0x3FFF && val != 0x20) {
+    // Trace VRAM writes (only in TRS-80 mode, not flat/test mode)
+    if (!bus.is_flat_mode() && addr >= 0x3C00 && addr <= 0x3FFF && val != 0x20) {
         fprintf(stderr, "VRAM[%03X]=0x%02X PC=0x%04X\n", addr - 0x3C00, val, reg.pc);
     }
     bus.write(addr, val);

@@ -1,6 +1,7 @@
 # Build artifacts
 build/
 mal-80
+zexall_test
 
 # macOS
 .DS_Store
@@ -8,6 +9,9 @@ mal-80
 # ROMs (Copyrighted)
 roms/*.rom
 roms/*.cas
+
+# Downloaded test binaries
+tests/zexall/*.com
 
 # Prerequisites
 *.d

@@ -38,6 +38,7 @@ constexpr uint16_t VIDEO_T_STATES_PER_FRAME = 29498; // Total T-states per 60Hz 
 class Bus {
 public:
     Bus();
+    explicit Bus(bool flat_memory);  // Flat 64KB mode for CP/M tests
     ~Bus();
 
     // Z80 Interface (called from CPU)
@@ -101,4 +102,15 @@ private:
     bool should_insert_wait_state(uint16_t addr, bool is_m1) const;
     void update_video_timing(int t_states);
     void check_video_contention();
+
+    // =========================================================================
+    // FLAT MEMORY MODE (for CP/M test programs like ZEXALL)
+    // =========================================================================
+    bool flat_mode = false;
+    std::array<uint8_t, 65536> flat_mem{};
+
+public:
+    // Direct access to flat memory (for loading .COM files)
+    uint8_t* get_flat_memory() { return flat_mem.data(); }
+    bool is_flat_mode() const { return flat_mode; }
 };

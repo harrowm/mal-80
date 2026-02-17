@@ -8,6 +8,13 @@ Bus::Bus() {
     reset();
 }
 
+Bus::Bus(bool flat_memory) : flat_mode(flat_memory) {
+    reset();
+    if (flat_mode) {
+        flat_mem.fill(0x00);
+    }
+}
+
 Bus::~Bus() {}
 
 void Bus::reset() {
@@ -45,6 +52,11 @@ void Bus::load_rom(const std::string& path, uint16_t offset) {
 // MEMORY READ (With TRS-80 Video Contention)
 // ============================================================================
 uint8_t Bus::read(uint16_t addr, bool is_m1) {
+    // Flat memory mode: simple 64KB RAM
+    if (flat_mode) {
+        return flat_mem[addr];
+    }
+
     // Check for video bus contention (TRS-80 Model I specific)
     if (should_insert_wait_state(addr, is_m1)) {
         // Insert 2 wait states during M1 cycle on visible scanlines
@@ -92,6 +104,12 @@ uint8_t Bus::read(uint16_t addr, bool is_m1) {
 // MEMORY WRITE
 // ============================================================================
 void Bus::write(uint16_t addr, uint8_t val) {
+    // Flat memory mode: simple 64KB RAM
+    if (flat_mode) {
+        flat_mem[addr] = val;
+        return;
+    }
+
     // Write contention is less critical than read, but track timing
     global_t_states++;
     update_video_timing(1);
