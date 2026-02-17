@@ -33,13 +33,12 @@ int main(int /*argc*/, char* /*argv*/[]) {
 
     // Keyboard matrix (8×8)
     uint8_t keyboard_matrix[8];
-    std::memset(keyboard_matrix, 0xFF, sizeof(keyboard_matrix));
+    std::memset(keyboard_matrix, 0x00, sizeof(keyboard_matrix));
     bus.set_keyboard_matrix(keyboard_matrix);
 
     // Emulation loop
     uint64_t frame_t_states = 0;
     constexpr uint64_t T_STATES_PER_FRAME = 29498;  // 60Hz
-    int frame_count = 0;
 
     while (display.is_running()) {
         // Handle input
@@ -62,28 +61,7 @@ int main(int /*argc*/, char* /*argv*/[]) {
         // Render frame
         display.render_frame(bus);
 
-        // Debug: dump state for first 5 frames
-        frame_count++;
-        if (frame_count <= 15) {
-            std::cout << "Frame " << frame_count
-                      << " PC=0x" << std::hex << cpu.get_pc()
-                      << " SP=0x" << cpu.get_sp()
-                      << " A=0x" << (int)cpu.get_a() << std::dec << std::endl;
-            // Check VRAM contents
-            int non_space = 0;
-            for (int i = 0; i < 1024; i++) {
-                uint8_t b = bus.get_vram_byte(i);
-                if (b != 0x20) non_space++;
-            }
-            std::cout << "  VRAM non-space bytes: " << non_space << "/1024" << std::endl;
-            // Show first 32 VRAM bytes
-            std::cout << "  VRAM[0..31]: ";
-            for (int i = 0; i < 32; i++) {
-                int b = bus.get_vram_byte(i);
-                std::cout << std::hex << (b < 16 ? "0" : "") << b << " ";
-            }
-            std::cout << std::dec << std::endl;
-        }
+
     }
 
     display.cleanup();

@@ -3,6 +3,7 @@
 #include "CharRom.hpp"
 #include "../system/Bus.hpp"
 #include <iostream>
+#include <cstdio>
 #include <cstring>
 
 // ============================================================================
@@ -12,7 +13,7 @@
 // ============================================================================
 
 Display::Display() {
-    std::memset(keyboard_matrix, 0xFF, sizeof(keyboard_matrix));
+    std::memset(keyboard_matrix, 0x00, sizeof(keyboard_matrix));
     init_char_generator();
 }
 
@@ -35,7 +36,13 @@ void Display::init_char_generator() {
 
 uint8_t Display::get_char_pattern(uint8_t char_code, uint8_t row) const {
     if (row >= 8) return 0x00;
-    return char_generator[char_code * 8 + row];
+    // TRS-80 MCM6670P character ROM uses 6-bit addressing (64 chars):
+    //   0x00-0x1F → @, A-Z, special  (maps to ASCII 0x40-0x5F in our table)
+    //   0x20-0x3F → space, digits, punctuation (same as ASCII)
+    // VRAM bit 6 is ignored by character ROM hardware; bit 7 selects semigraphics
+    uint8_t rom_addr = char_code & 0x3F;
+    uint8_t ascii_idx = (rom_addr < 0x20) ? (rom_addr + 0x40) : rom_addr;
+    return char_generator[ascii_idx * 8 + row];
 }
 
 // ============================================================================
@@ -250,6 +257,10 @@ bool Display::handle_events(uint8_t* keyboard_matrix) {
         
         if (event.type == SDL_KEYDOWN || event.type == SDL_KEYUP) {
             bool pressed = (event.type == SDL_KEYDOWN);
+            SDL_Keysym ks = event.key.keysym;
+            fprintf(stderr, "KEY %s: sym=0x%X (%s) scancode=%d mod=0x%04X\n",
+                    pressed ? "DOWN" : "UP  ",
+                    ks.sym, SDL_GetKeyName(ks.sym), ks.scancode, ks.mod);
             
             // Map SDL keys to TRS-80 keyboard matrix
             // TRS-80 Model I keyboard matrix (active low):
@@ -340,11 +351,14 @@ bool Display::handle_events(uint8_t* keyboard_matrix) {
             }
             
             if (row < 8 && col < 8) {
+                fprintf(stderr, "  -> TRS-80 row=%d col=%d %s\n", row, col, pressed ? "PRESS" : "RELEASE");
                 if (pressed) {
-                    keyboard_matrix[row] &= ~(1 << col);  // Clear bit (active low)
+                    keyboard_matrix[row] |= (1 << col);   // Set bit (active high)
                 } else {
-                    keyboard_matrix[row] |= (1 << col);   // Set bit
+                    keyboard_matrix[row] &= ~(1 << col);  // Clear bit
                 }
+            } else {
+                fprintf(stderr, "  -> UNMAPPED\n");
             }
         }
     }
@@ -353,8 +367,8 @@ bool Display::handle_events(uint8_t* keyboard_matrix) {
 }
 
 void Display::init_keyboard_matrix() {
-    // All keys released (bits set = not pressed, active low)
-    std::memset(keyboard_matrix, 0xFF, sizeof(keyboard_matrix));
+    // All keys released (active high: 0 = not pressed)
+    std::memset(keyboard_matrix, 0x00, sizeof(keyboard_matrix));
 }
 
 void Display::set_title(const std::string& title) {

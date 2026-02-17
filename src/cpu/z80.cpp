@@ -98,6 +98,10 @@ uint8_t Z80::read_mem(uint16_t addr, bool is_m1) {
 }
 
 void Z80::write_mem(uint16_t addr, uint8_t val) {
+    // Trace VRAM writes
+    if (addr >= 0x3C00 && addr <= 0x3FFF && val != 0x20) {
+        fprintf(stderr, "VRAM[%03X]=0x%02X PC=0x%04X\n", addr - 0x3C00, val, reg.pc);
+    }
     bus.write(addr, val);
 }
 
@@ -1361,63 +1365,162 @@ void Z80::init_ed_table() {
 }
 
 // ============================================================================
-// DD/FD PREFIX TABLES (IX/IY Index Registers - Partial)
+// DD/FD PREFIX TABLES (IX/IY Index Registers)
 // ============================================================================
 void Z80::init_dd_table() {
-    for (auto& op : dd_table) {
-        op = [this]() { prefix = 0x00; };  // Default to invalid
+    // Default: treat as NOP (but log if still hitting unknowns)
+    for (int i = 0; i < 256; i++) {
+        dd_table[i] = [this, i]() {
+            static int warn_count = 0;
+            if (warn_count < 50) {
+                fprintf(stderr, "UNIMPL DD 0x%02X at PC=0x%04X\n", i, (unsigned)(reg.pc - 1));
+                warn_count++;
+            }
+            add_ticks(4);
+        };
     }
-    
+
     // LD IX, nn
     dd_table[0x21] = [this]() { reg.ix = fetch16(); add_ticks(14); };
-    
-    // LD (IX+d), r
-    dd_table[0x36] = [this]() { int8_t d = static_cast<int8_t>(fetch(false)); uint8_t v = fetch(false); write_mem(reg.ix + d, v); add_ticks(19); };
-    
-    // LD r, (IX+d)
-    dd_table[0x46] = [this]() { int8_t d = static_cast<int8_t>(fetch(false)); reg.b = read_mem(reg.ix + d); add_ticks(19); };
-    dd_table[0x4E] = [this]() { int8_t d = static_cast<int8_t>(fetch(false)); reg.c = read_mem(reg.ix + d); add_ticks(19); };
-    dd_table[0x56] = [this]() { int8_t d = static_cast<int8_t>(fetch(false)); reg.d = read_mem(reg.ix + d); add_ticks(19); };
-    dd_table[0x5E] = [this]() { int8_t d = static_cast<int8_t>(fetch(false)); reg.e = read_mem(reg.ix + d); add_ticks(19); };
-    dd_table[0x66] = [this]() { int8_t d = static_cast<int8_t>(fetch(false)); reg.h = read_mem(reg.ix + d); add_ticks(19); };
-    dd_table[0x6E] = [this]() { int8_t d = static_cast<int8_t>(fetch(false)); reg.l = read_mem(reg.ix + d); add_ticks(19); };
-    dd_table[0x7E] = [this]() { int8_t d = static_cast<int8_t>(fetch(false)); reg.a = read_mem(reg.ix + d); add_ticks(19); };
-    
-    // ADD IX, BC/DE/IX/SP
+
+    // LD (nn), IX / LD IX, (nn)
+    dd_table[0x22] = [this]() { uint16_t a = fetch16(); write_mem(a, reg.ix & 0xFF); write_mem(a+1, reg.ix >> 8); add_ticks(20); };
+    dd_table[0x2A] = [this]() { uint16_t a = fetch16(); reg.ix = read_mem(a) | (read_mem(a+1) << 8); add_ticks(20); };
+
+    // INC/DEC IX
+    dd_table[0x23] = [this]() { reg.ix++; add_ticks(10); };
+    dd_table[0x2B] = [this]() { reg.ix--; add_ticks(10); };
+
+    // ADD IX, rr
     dd_table[0x09] = [this]() { op_add16(reg.ix, reg.bc); };
     dd_table[0x19] = [this]() { op_add16(reg.ix, reg.de); };
     dd_table[0x29] = [this]() { op_add16(reg.ix, reg.ix); };
     dd_table[0x39] = [this]() { op_add16(reg.ix, reg.sp); };
-    
-    // LD IX, (nn) / LD (nn), IX
-    dd_table[0x2A] = [this]() { uint16_t addr = fetch16(); reg.ix = read_mem(addr) | (read_mem(addr + 1) << 8); add_ticks(20); };
-    dd_table[0x22] = [this]() { uint16_t addr = fetch16(); write_mem(addr, reg.ix & 0xFF); write_mem(addr + 1, reg.ix >> 8); add_ticks(20); };
-    
-    // INC/DEC IX
-    dd_table[0x23] = [this]() { reg.ix++; add_ticks(10); };
-    dd_table[0x2B] = [this]() { reg.ix--; add_ticks(10); };
-    
+
+    // INC/DEC (IX+d)
+    dd_table[0x34] = [this]() { int8_t d = static_cast<int8_t>(fetch(false)); uint16_t a = reg.ix+d; uint8_t v = read_mem(a); op_inc(v); write_mem(a, v); add_ticks(19); };
+    dd_table[0x35] = [this]() { int8_t d = static_cast<int8_t>(fetch(false)); uint16_t a = reg.ix+d; uint8_t v = read_mem(a); op_dec(v); write_mem(a, v); add_ticks(19); };
+
+    // LD (IX+d), n
+    dd_table[0x36] = [this]() { int8_t d = static_cast<int8_t>(fetch(false)); uint8_t v = fetch(false); write_mem(reg.ix+d, v); add_ticks(19); };
+
+    // LD r, (IX+d)
+    dd_table[0x46] = [this]() { int8_t d = static_cast<int8_t>(fetch(false)); reg.b = read_mem(reg.ix+d); add_ticks(19); };
+    dd_table[0x4E] = [this]() { int8_t d = static_cast<int8_t>(fetch(false)); reg.c = read_mem(reg.ix+d); add_ticks(19); };
+    dd_table[0x56] = [this]() { int8_t d = static_cast<int8_t>(fetch(false)); reg.d = read_mem(reg.ix+d); add_ticks(19); };
+    dd_table[0x5E] = [this]() { int8_t d = static_cast<int8_t>(fetch(false)); reg.e = read_mem(reg.ix+d); add_ticks(19); };
+    dd_table[0x66] = [this]() { int8_t d = static_cast<int8_t>(fetch(false)); reg.h = read_mem(reg.ix+d); add_ticks(19); };
+    dd_table[0x6E] = [this]() { int8_t d = static_cast<int8_t>(fetch(false)); reg.l = read_mem(reg.ix+d); add_ticks(19); };
+    dd_table[0x7E] = [this]() { int8_t d = static_cast<int8_t>(fetch(false)); reg.a = read_mem(reg.ix+d); add_ticks(19); };
+
+    // LD (IX+d), r  ← THE MISSING ONES
+    dd_table[0x70] = [this]() { int8_t d = static_cast<int8_t>(fetch(false)); write_mem(reg.ix+d, reg.b); add_ticks(19); };
+    dd_table[0x71] = [this]() { int8_t d = static_cast<int8_t>(fetch(false)); write_mem(reg.ix+d, reg.c); add_ticks(19); };
+    dd_table[0x72] = [this]() { int8_t d = static_cast<int8_t>(fetch(false)); write_mem(reg.ix+d, reg.d); add_ticks(19); };
+    dd_table[0x73] = [this]() { int8_t d = static_cast<int8_t>(fetch(false)); write_mem(reg.ix+d, reg.e); add_ticks(19); };
+    dd_table[0x74] = [this]() { int8_t d = static_cast<int8_t>(fetch(false)); write_mem(reg.ix+d, reg.h); add_ticks(19); };
+    dd_table[0x75] = [this]() { int8_t d = static_cast<int8_t>(fetch(false)); write_mem(reg.ix+d, reg.l); add_ticks(19); };
+    dd_table[0x77] = [this]() { int8_t d = static_cast<int8_t>(fetch(false)); write_mem(reg.ix+d, reg.a); add_ticks(19); };
+
+    // Arithmetic with (IX+d)
+    dd_table[0x86] = [this]() { int8_t d = static_cast<int8_t>(fetch(false)); op_add(read_mem(reg.ix+d)); add_ticks(11); };
+    dd_table[0x8E] = [this]() { int8_t d = static_cast<int8_t>(fetch(false)); op_adc(read_mem(reg.ix+d)); add_ticks(11); };
+    dd_table[0x96] = [this]() { int8_t d = static_cast<int8_t>(fetch(false)); op_sub(read_mem(reg.ix+d)); add_ticks(11); };
+    dd_table[0x9E] = [this]() { int8_t d = static_cast<int8_t>(fetch(false)); op_sbc(read_mem(reg.ix+d)); add_ticks(11); };
+    dd_table[0xA6] = [this]() { int8_t d = static_cast<int8_t>(fetch(false)); op_and(read_mem(reg.ix+d)); add_ticks(11); };
+    dd_table[0xAE] = [this]() { int8_t d = static_cast<int8_t>(fetch(false)); op_xor(read_mem(reg.ix+d)); add_ticks(11); };
+    dd_table[0xB6] = [this]() { int8_t d = static_cast<int8_t>(fetch(false)); op_or(read_mem(reg.ix+d)); add_ticks(11); };
+    dd_table[0xBE] = [this]() { int8_t d = static_cast<int8_t>(fetch(false)); op_cp(read_mem(reg.ix+d)); add_ticks(11); };
+
     // PUSH/POP IX
     dd_table[0xE5] = [this]() { push(reg.ix); };
     dd_table[0xE1] = [this]() { reg.ix = pop(); };
-    
-    // IX as HL substitute for many opcodes
-    dd_table[0x09] = [this]() { op_add16(reg.ix, reg.bc); };
+
+    // EX (SP), IX
+    dd_table[0xE3] = [this]() { uint16_t v = reg.ix; reg.ix = read_mem(reg.sp) | (read_mem(reg.sp+1) << 8); write_mem(reg.sp, v & 0xFF); write_mem(reg.sp+1, v >> 8); add_ticks(23); };
+
+    // JP (IX)
     dd_table[0xE9] = [this]() { reg.pc = reg.ix; add_ticks(8); };
+
+    // LD SP, IX
+    dd_table[0xF9] = [this]() { reg.sp = reg.ix; add_ticks(10); };
 }
 
 void Z80::init_fd_table() {
-    // IY operations - identical to IX but using reg.iy
-    for (auto& op : fd_table) {
-        op = [this]() { prefix = 0x00; };
+    // Default: log unimplemented
+    for (int i = 0; i < 256; i++) {
+        fd_table[i] = [this, i]() {
+            static int warn_count = 0;
+            if (warn_count < 50) {
+                fprintf(stderr, "UNIMPL FD 0x%02X at PC=0x%04X\n", i, (unsigned)(reg.pc - 1));
+                warn_count++;
+            }
+            add_ticks(4);
+        };
     }
-    
+
+    // LD IY, nn
     fd_table[0x21] = [this]() { reg.iy = fetch16(); add_ticks(14); };
-    fd_table[0x2A] = [this]() { uint16_t addr = fetch16(); reg.iy = read_mem(addr) | (read_mem(addr + 1) << 8); add_ticks(20); };
-    fd_table[0x22] = [this]() { uint16_t addr = fetch16(); write_mem(addr, reg.iy & 0xFF); write_mem(addr + 1, reg.iy >> 8); add_ticks(20); };
+
+    // LD (nn), IY / LD IY, (nn)
+    fd_table[0x22] = [this]() { uint16_t a = fetch16(); write_mem(a, reg.iy & 0xFF); write_mem(a+1, reg.iy >> 8); add_ticks(20); };
+    fd_table[0x2A] = [this]() { uint16_t a = fetch16(); reg.iy = read_mem(a) | (read_mem(a+1) << 8); add_ticks(20); };
+
+    // INC/DEC IY
     fd_table[0x23] = [this]() { reg.iy++; add_ticks(10); };
     fd_table[0x2B] = [this]() { reg.iy--; add_ticks(10); };
+
+    // ADD IY, rr
+    fd_table[0x09] = [this]() { op_add16(reg.iy, reg.bc); };
+    fd_table[0x19] = [this]() { op_add16(reg.iy, reg.de); };
+    fd_table[0x29] = [this]() { op_add16(reg.iy, reg.iy); };
+    fd_table[0x39] = [this]() { op_add16(reg.iy, reg.sp); };
+
+    // INC/DEC (IY+d)
+    fd_table[0x34] = [this]() { int8_t d = static_cast<int8_t>(fetch(false)); uint16_t a = reg.iy+d; uint8_t v = read_mem(a); op_inc(v); write_mem(a, v); add_ticks(19); };
+    fd_table[0x35] = [this]() { int8_t d = static_cast<int8_t>(fetch(false)); uint16_t a = reg.iy+d; uint8_t v = read_mem(a); op_dec(v); write_mem(a, v); add_ticks(19); };
+
+    // LD (IY+d), n
+    fd_table[0x36] = [this]() { int8_t d = static_cast<int8_t>(fetch(false)); uint8_t v = fetch(false); write_mem(reg.iy+d, v); add_ticks(19); };
+
+    // LD r, (IY+d)
+    fd_table[0x46] = [this]() { int8_t d = static_cast<int8_t>(fetch(false)); reg.b = read_mem(reg.iy+d); add_ticks(19); };
+    fd_table[0x4E] = [this]() { int8_t d = static_cast<int8_t>(fetch(false)); reg.c = read_mem(reg.iy+d); add_ticks(19); };
+    fd_table[0x56] = [this]() { int8_t d = static_cast<int8_t>(fetch(false)); reg.d = read_mem(reg.iy+d); add_ticks(19); };
+    fd_table[0x5E] = [this]() { int8_t d = static_cast<int8_t>(fetch(false)); reg.e = read_mem(reg.iy+d); add_ticks(19); };
+    fd_table[0x66] = [this]() { int8_t d = static_cast<int8_t>(fetch(false)); reg.h = read_mem(reg.iy+d); add_ticks(19); };
+    fd_table[0x6E] = [this]() { int8_t d = static_cast<int8_t>(fetch(false)); reg.l = read_mem(reg.iy+d); add_ticks(19); };
+    fd_table[0x7E] = [this]() { int8_t d = static_cast<int8_t>(fetch(false)); reg.a = read_mem(reg.iy+d); add_ticks(19); };
+
+    // LD (IY+d), r
+    fd_table[0x70] = [this]() { int8_t d = static_cast<int8_t>(fetch(false)); write_mem(reg.iy+d, reg.b); add_ticks(19); };
+    fd_table[0x71] = [this]() { int8_t d = static_cast<int8_t>(fetch(false)); write_mem(reg.iy+d, reg.c); add_ticks(19); };
+    fd_table[0x72] = [this]() { int8_t d = static_cast<int8_t>(fetch(false)); write_mem(reg.iy+d, reg.d); add_ticks(19); };
+    fd_table[0x73] = [this]() { int8_t d = static_cast<int8_t>(fetch(false)); write_mem(reg.iy+d, reg.e); add_ticks(19); };
+    fd_table[0x74] = [this]() { int8_t d = static_cast<int8_t>(fetch(false)); write_mem(reg.iy+d, reg.h); add_ticks(19); };
+    fd_table[0x75] = [this]() { int8_t d = static_cast<int8_t>(fetch(false)); write_mem(reg.iy+d, reg.l); add_ticks(19); };
+    fd_table[0x77] = [this]() { int8_t d = static_cast<int8_t>(fetch(false)); write_mem(reg.iy+d, reg.a); add_ticks(19); };
+
+    // Arithmetic with (IY+d)
+    fd_table[0x86] = [this]() { int8_t d = static_cast<int8_t>(fetch(false)); op_add(read_mem(reg.iy+d)); add_ticks(11); };
+    fd_table[0x8E] = [this]() { int8_t d = static_cast<int8_t>(fetch(false)); op_adc(read_mem(reg.iy+d)); add_ticks(11); };
+    fd_table[0x96] = [this]() { int8_t d = static_cast<int8_t>(fetch(false)); op_sub(read_mem(reg.iy+d)); add_ticks(11); };
+    fd_table[0x9E] = [this]() { int8_t d = static_cast<int8_t>(fetch(false)); op_sbc(read_mem(reg.iy+d)); add_ticks(11); };
+    fd_table[0xA6] = [this]() { int8_t d = static_cast<int8_t>(fetch(false)); op_and(read_mem(reg.iy+d)); add_ticks(11); };
+    fd_table[0xAE] = [this]() { int8_t d = static_cast<int8_t>(fetch(false)); op_xor(read_mem(reg.iy+d)); add_ticks(11); };
+    fd_table[0xB6] = [this]() { int8_t d = static_cast<int8_t>(fetch(false)); op_or(read_mem(reg.iy+d)); add_ticks(11); };
+    fd_table[0xBE] = [this]() { int8_t d = static_cast<int8_t>(fetch(false)); op_cp(read_mem(reg.iy+d)); add_ticks(11); };
+
+    // PUSH/POP IY
     fd_table[0xE5] = [this]() { push(reg.iy); };
     fd_table[0xE1] = [this]() { reg.iy = pop(); };
+
+    // EX (SP), IY
+    fd_table[0xE3] = [this]() { uint16_t v = reg.iy; reg.iy = read_mem(reg.sp) | (read_mem(reg.sp+1) << 8); write_mem(reg.sp, v & 0xFF); write_mem(reg.sp+1, v >> 8); add_ticks(23); };
+
+    // JP (IY)
     fd_table[0xE9] = [this]() { reg.pc = reg.iy; add_ticks(8); };
+
+    // LD SP, IY
+    fd_table[0xF9] = [this]() { reg.sp = reg.iy; add_ticks(10); };
 }

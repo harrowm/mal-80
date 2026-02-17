@@ -50,3 +50,4 @@ roms/*.cas
 
 # debug information files
 *.dwo
+*.log

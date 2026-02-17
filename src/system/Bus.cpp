@@ -62,14 +62,14 @@ uint8_t Bus::read(uint16_t addr, bool is_m1) {
         // Address bits 0-7 select which row(s) to scan
         if (keyboard_matrix) {
             uint8_t row_select = addr & 0xFF;
-            value = 0xFF;  // All keys released by default
+            value = 0x00;  // No keys pressed (active high)
             for (int row = 0; row < 8; row++) {
                 if (row_select & (1 << row)) {
-                    value &= keyboard_matrix[row];
+                    value |= keyboard_matrix[row];
                 }
             }
         } else {
-            value = 0xFF;  // No keyboard connected
+            value = 0x00;  // No keyboard connected
         }
     } else if (addr >= VRAM_START && addr <= VRAM_END) {
         // Video RAM (0x3C00 - 0x3FFF)
