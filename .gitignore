@@ -1,3 +1,14 @@
+# Build artifacts
+build/
+mal-80
+
+# macOS
+.DS_Store
+
+# ROMs (Copyrighted)
+roms/*.rom
+roms/*.cas
+
 # Prerequisites
 *.d
 
