@@ -10,6 +10,8 @@
 #include <unistd.h>
 #include <filesystem>
 #include <algorithm>
+#include <queue>
+#include <cctype>
 #include <SDL.h>
 #include "cpu/z80.hpp"
 #include "system/Bus.hpp"
@@ -137,6 +139,8 @@ static bool load_system_cas(const std::string& path, Bus& bus, Z80& cpu) {
 // ============================================================================
 constexpr uint16_t ROM_SYNC_SEARCH   = 0x0293;  // CLOAD sync search entry
 constexpr uint16_t ROM_WRITE_LEADER  = 0x0284;  // CSAVE write leader+sync entry
+constexpr uint16_t ROM_KEY           = 0x0049;  // $KEY: wait-for-keypress, returns ASCII in A
+constexpr uint16_t ROM_BASIC_READY   = 0x1A19;  // BASIC warm restart (prints READY, loops)
 constexpr uint16_t ROM_FILENAME_PTR  = 0x40A7;  // 2-byte pointer to 6-char filename
 
 // Extract the BASIC filename from RAM (6 chars, space-padded, trimmed)
@@ -171,7 +175,7 @@ static std::string find_cas_file(const std::string& filename, const char* tag = 
         if (!e.is_regular_file()) continue;
         std::string ext = e.path().extension().string();
         std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
-        if (ext != ".cas") continue;
+        if (ext != ".cas" && ext != ".bas") continue;
         std::string fname = e.path().stem().string();
         std::string fname_lower = fname;
         std::transform(fname_lower.begin(), fname_lower.end(), fname_lower.begin(), ::tolower);
@@ -186,6 +190,40 @@ static std::string find_cas_file(const std::string& filename, const char* tag = 
     std::sort(cas_files.begin(), cas_files.end());
     std::cout << "[" << tag << "] Picking: '" << cas_files.front() << "'" << std::endl;
     return cas_files.front();
+}
+
+// Enqueue characters from a string into the type queue.
+// Uppercases a-z (TRS-80 has no lowercase keys), maps \n -> 0x0D (Enter),
+// skips \r (handles Windows CRLF files), drops other non-printable chars.
+static void enqueue_text(std::queue<uint8_t>& q, const std::string& text) {
+    for (unsigned char c : text) {
+        if (c >= 'a' && c <= 'z')  q.push(c - 32);   // uppercase
+        else if (c == '\n')         q.push(0x0D);      // Enter
+        else if (c == '\r')         continue;           // strip CR
+        else if (c >= 0x20)         q.push(c);          // printable ASCII
+    }
+}
+
+// Load a plain-text BASIC file into the type queue.
+// Prepends "NEW\n" to clear any existing program first.
+static void load_bas_file(const std::string& path, std::queue<uint8_t>& q) {
+    std::ifstream file(path);
+    if (!file.is_open()) {
+        std::cerr << "[BAS] Failed to open: " << path << std::endl;
+        return;
+    }
+    enqueue_text(q, "NEW\n");
+    std::string line;
+    int lines = 0;
+    while (std::getline(file, line)) {
+        if (!line.empty() && line.back() == '\r') line.pop_back();  // strip CR
+        if (!line.empty()) {
+            enqueue_text(q, line + "\n");
+            lines++;
+        }
+    }
+    std::cout << "[BAS] Queued " << lines << " lines ("
+              << q.size() << " chars) from " << path << std::endl;
 }
 
 static void crash_handler(int sig) {
@@ -245,6 +283,10 @@ int main(int /*argc*/, char* /*argv*/[]) {
     // SYSTEM state: set when 0x02CE fires, cleared on success or when CLOAD
     // intercept sees it (to suppress CLOAD from also firing for the same file).
     bool system_active = false;
+
+    // Keyboard injection queue: drained one char at a time via $KEY intercept.
+    // Used to type BASIC programs loaded from .bas text files.
+    std::queue<uint8_t> type_queue;
     while (display.is_running()) {
         // Handle input
         display.handle_events(keyboard_matrix);
@@ -279,22 +321,35 @@ int main(int /*argc*/, char* /*argv*/[]) {
                 } else {
                     std::string fname = extract_filename(bus);
                     std::string path = find_cas_file(fname);
-                    if (!path.empty() && bus.load_cas_file(path)) {
-                        bus.set_cas_filename(fname.empty() ? "(auto)" : fname);
-                        bus.start_playback();
-
-                        const auto& cas = bus.get_cas_data();
-                        cload_active = true;
-                        cload_realigned = false;
-                        cload_byte_count = 0;
-                        cload_sync_pos = 0;
-                        for (size_t i = 0; i < cas.size(); i++) {
-                            if (cas[i] == 0xA5) { cload_sync_pos = i; break; }
-                        }
-                        size_t data_bytes = cas.size() - cload_sync_pos - 1;
-                        std::cout << "CLOAD: " << path << " (" << data_bytes << " bytes)" << std::endl;
+                    if (path.empty()) {
+                        std::cout << "CLOAD: no file found" << std::endl;
                     } else {
-                        std::cout << "CLOAD: no .cas file found" << std::endl;
+                        namespace fs = std::filesystem;
+                        std::string ext = fs::path(path).extension().string();
+                        std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
+
+                        if (ext == ".bas") {
+                            // Text BASIC file: queue keystrokes and return to READY
+                            load_bas_file(path, type_queue);
+                            cpu.set_pc(ROM_BASIC_READY);
+                        } else {
+                            // Binary .cas file: normal cassette FSK playback
+                            if (bus.load_cas_file(path)) {
+                                bus.set_cas_filename(fname.empty() ? "(auto)" : fname);
+                                bus.start_playback();
+
+                                const auto& cas = bus.get_cas_data();
+                                cload_active = true;
+                                cload_realigned = false;
+                                cload_byte_count = 0;
+                                cload_sync_pos = 0;
+                                for (size_t i = 0; i < cas.size(); i++) {
+                                    if (cas[i] == 0xA5) { cload_sync_pos = i; break; }
+                                }
+                                size_t data_bytes = cas.size() - cload_sync_pos - 1;
+                                std::cout << "CLOAD: " << path << " (" << data_bytes << " bytes)" << std::endl;
+                            }
+                        }
                     }
                 }
             }
@@ -337,6 +392,25 @@ int main(int /*argc*/, char* /*argv*/[]) {
                 bus.set_cas_filename(fname);
                 bus.start_recording();
                 std::cout << "CSAVE: recording" << (fname.empty() ? "" : " \"" + fname + "\"") << std::endl;
+            }
+
+            // $KEY intercept (0x0049): inject queued characters one at a time.
+            // $KEY is the wait-for-keypress routine used by BASIC line input.
+            // It is NOT called by INKEY$ (which uses $KBD/0x002B directly),
+            // so this only fires during BASIC command/line input — safe for games.
+            if (pc == ROM_KEY && !type_queue.empty()) {
+                uint8_t ch = type_queue.front();
+                type_queue.pop();
+                // Fake a RET: pop the caller's return address and jump there
+                uint16_t sp = cpu.get_sp();
+                uint16_t ret_addr = bus.peek(sp) | (bus.peek(sp + 1) << 8);
+                cpu.set_sp(sp + 2);
+                cpu.set_pc(ret_addr);
+                cpu.set_a(ch);
+                // Don't call cpu.step() this iteration — we already changed PC
+                bus.add_ticks(10);  // approximate cost of the intercepted call
+                frame_t_states += 10;
+                continue;
             }
 
             int ticks = cpu.step();

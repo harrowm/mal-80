@@ -39,9 +39,10 @@ public:
     uint16_t get_de() const { return reg.de; }
     uint16_t get_hl() const { return reg.hl; }
 
-    // Debug mutation (for test harnesses)
+    // Debug mutation (for test harnesses and ROM intercepts)
     void set_pc(uint16_t val) { reg.pc = val; }
     void set_sp(uint16_t val) { reg.sp = val; }
+    void set_a(uint8_t val)   { reg.a  = val; }
 
 private:
     // ------------------------------------------------------------------------
