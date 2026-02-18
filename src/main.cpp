@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <queue>
 #include <cctype>
+#include <chrono>
 #include <SDL.h>
 #include "cpu/z80.hpp"
 #include "system/Bus.hpp"
@@ -234,6 +235,8 @@ static void crash_handler(int sig) {
     _exit(1);
 }
 
+enum class SpeedMode { NORMAL, TURBO };
+
 int main(int /*argc*/, char* /*argv*/[]) {
     signal(SIGSEGV, crash_handler);
     signal(SIGBUS, crash_handler);
@@ -271,7 +274,17 @@ int main(int /*argc*/, char* /*argv*/[]) {
     // Emulation loop
     uint64_t frame_t_states = 0;
     constexpr uint64_t T_STATES_PER_FRAME = 29498;  // 60Hz
+    constexpr uint64_t TURBO_T_STATES     = T_STATES_PER_FRAME * 100;
+    constexpr int      TURBO_RENDER_EVERY = 10;
+    constexpr int      NORMAL_FRAME_US    = 16667;   // ~60Hz in microseconds
+
+    SpeedMode user_speed = SpeedMode::NORMAL;  // future control-panel hook
+    SpeedMode cur_speed  = SpeedMode::NORMAL;
+    int  turbo_render_count = 0;
+    auto frame_start = std::chrono::steady_clock::now();
+
     CassetteState prev_cas_state = CassetteState::IDLE;
+    SpeedMode     prev_speed     = SpeedMode::NORMAL;
 
     // CLOAD state tracking
     bool cload_active = false;
@@ -291,9 +304,18 @@ int main(int /*argc*/, char* /*argv*/[]) {
         // Handle input
         display.handle_events(keyboard_matrix);
 
-        // Run CPU for one video frame
+        // Auto-select speed: turbo while keyboard injection is active
+        SpeedMode desired = !type_queue.empty() ? SpeedMode::TURBO : user_speed;
+        if (desired != cur_speed) {
+            cur_speed = desired;
+            turbo_render_count = 0;
+            frame_start = std::chrono::steady_clock::now();
+        }
+
+        // Run CPU for one video frame worth of T-states (or 100× in turbo)
+        uint64_t t_budget = (cur_speed == SpeedMode::TURBO) ? TURBO_T_STATES : T_STATES_PER_FRAME;
         frame_t_states = 0;
-        while (frame_t_states < T_STATES_PER_FRAME) {
+        while (frame_t_states < t_budget) {
             // --- PC Watch: intercept CLOAD/CSAVE entry points ---
             uint16_t pc = cpu.get_pc();
 
@@ -434,20 +456,36 @@ int main(int /*argc*/, char* /*argv*/[]) {
             }
         }
 
-        // Update title bar with cassette status
+        // Update title bar when cassette state or speed mode changes
         CassetteState cur_cas_state = bus.get_cassette_state();
-        if (cur_cas_state != prev_cas_state) {
-            std::string status = bus.get_cassette_status();
+        if (cur_cas_state != prev_cas_state || cur_speed != prev_speed) {
+            std::string status   = bus.get_cassette_status();
+            std::string speed_tag = (cur_speed == SpeedMode::TURBO) ? " [TURBO]" : "";
             if (status.empty()) {
-                display.set_title("Mal-80 - TRS-80 Emulator");
+                display.set_title("Mal-80 - TRS-80 Emulator" + speed_tag);
             } else {
-                display.set_title("Mal-80 - " + status);
+                display.set_title("Mal-80 - " + status + speed_tag);
             }
             prev_cas_state = cur_cas_state;
+            prev_speed     = cur_speed;
         }
 
-        // Render frame
-        display.render_frame(bus);
+        // Render frame: always in NORMAL mode; in TURBO mode render every Nth frame
+        bool should_render = (cur_speed == SpeedMode::NORMAL) ||
+                             (++turbo_render_count % TURBO_RENDER_EVERY == 0);
+        if (should_render) {
+            display.render_frame(bus);
+        }
+
+        // Frame pacing: in NORMAL mode sleep to maintain ~60Hz
+        if (cur_speed == SpeedMode::NORMAL) {
+            auto now     = std::chrono::steady_clock::now();
+            auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(now - frame_start).count();
+            if (elapsed < NORMAL_FRAME_US) {
+                SDL_Delay(static_cast<uint32_t>((NORMAL_FRAME_US - elapsed) / 1000));
+            }
+        }
+        frame_start = std::chrono::steady_clock::now();
 
 
     }

@@ -71,7 +71,7 @@ bool Display::init(const std::string& title) {
     renderer = SDL_CreateRenderer(
         window,
         -1,
-        SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC
+        SDL_RENDERER_ACCELERATED
     );
 
     if (!renderer) {
