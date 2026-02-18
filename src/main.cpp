@@ -1,5 +1,9 @@
-// src/main.cpp
+
 #include <iostream>
+#include <fstream>
+#include <vector>
+#include <cstdint>
+#include <cstring>
 #include <signal.h>
 #include <execinfo.h>
 #include <cstdlib>
@@ -10,6 +14,123 @@
 #include "cpu/z80.hpp"
 #include "system/Bus.hpp"
 #include "video/Display.hpp"
+
+// LOPHD (0x02CE): turns on cassette motor for SYSTEM load — intercept here
+// before it calls CSRDON (0x0293), so CLOAD intercept never fires for SYSTEM.
+constexpr uint16_t ROM_SYSTEM_ENTRY   = 0x02CE;
+
+// Parse a TRS-80 SYSTEM (machine language) .cas file and load into RAM.
+//
+// CAS format for SYSTEM files:
+//   [256 × 0x00 leader] [0xA5 sync] [0x55 type] [6-byte name]
+//   repeated: [0x3C] [count: 0=256] [load_lo] [load_hi] [data...] [checksum]
+//   checksum = (load_hi + load_lo + sum(data_bytes)) mod 256
+//   EOF:       [0x78] [exec_lo] [exec_hi]
+//
+// Returns true on success (PC set to exec address), false on error.
+static bool load_system_cas(const std::string& path, Bus& bus, Z80& cpu) {
+    std::ifstream file(path, std::ios::binary);
+    if (!file.is_open()) {
+        std::cerr << "[SYSTEM] Failed to open: " << path << std::endl;
+        return false;
+    }
+    std::vector<uint8_t> buf((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+
+    size_t i = 0;
+    // Skip leader (0x00 bytes)
+    while (i < buf.size() && buf[i] == 0x00) i++;
+
+    if (i >= buf.size() || buf[i] != 0xA5) {
+        std::cerr << "[SYSTEM] No sync byte (0xA5) in: " << path << std::endl;
+        return false;
+    }
+    i++;  // sync
+
+    if (i >= buf.size() || buf[i] != 0x55) {
+        std::cerr << "[SYSTEM] Not a SYSTEM file (expected 0x55, got 0x"
+                  << std::hex << (int)buf[i] << ") in: " << path << std::endl;
+        return false;
+    }
+    i++;  // type byte
+
+    if (i + 6 > buf.size()) {
+        std::cerr << "[SYSTEM] Truncated filename in: " << path << std::endl;
+        return false;
+    }
+    std::string cas_name(buf.begin() + i, buf.begin() + i + 6);
+    i += 6;
+
+    uint16_t exec_addr = 0;
+    bool found_exec = false;
+    int blocks_loaded = 0;
+
+    while (i < buf.size()) {
+        uint8_t marker = buf[i++];
+
+        if (marker == 0x3C) {
+            // Data block: [count] [load_lo] [load_hi] [data×count] [checksum]
+            if (i + 3 > buf.size()) {
+                std::cerr << "[SYSTEM] Truncated data block header" << std::endl;
+                return false;
+            }
+            uint8_t  count       = buf[i++];
+            uint8_t  load_lo     = buf[i++];
+            uint8_t  load_hi     = buf[i++];
+            uint16_t load_addr   = load_lo | (load_hi << 8);
+            size_t   actual_count = (count == 0) ? 256 : count;
+
+            if (i + actual_count + 1 > buf.size()) {
+                std::cerr << "[SYSTEM] Truncated data block data" << std::endl;
+                return false;
+            }
+
+            // Verify checksum before writing
+            uint8_t computed = (load_hi + load_lo) & 0xFF;
+            for (size_t j = 0; j < actual_count; j++)
+                computed = (computed + buf[i + j]) & 0xFF;
+            uint8_t stored = buf[i + actual_count];
+            if (computed != stored) {
+                std::cerr << "[SYSTEM] Checksum error block at 0x" << std::hex
+                          << load_addr << ": computed 0x" << (int)computed
+                          << " stored 0x" << (int)stored << std::endl;
+                // continue anyway — same as real ROM behaviour
+            }
+
+            for (size_t j = 0; j < actual_count; j++)
+                bus.write(static_cast<uint16_t>(load_addr + j), buf[i + j]);
+
+            i += actual_count + 1;  // data + checksum
+            blocks_loaded++;
+
+        } else if (marker == 0x78) {
+            // EOF block: [exec_lo] [exec_hi]
+            if (i + 2 > buf.size()) {
+                std::cerr << "[SYSTEM] Truncated EOF block" << std::endl;
+                return false;
+            }
+            exec_addr = buf[i] | (buf[i + 1] << 8);
+            i += 2;
+            found_exec = true;
+            break;
+
+        } else {
+            std::cerr << "[SYSTEM] Unknown block marker 0x" << std::hex
+                      << (int)marker << " at offset " << std::dec << (i - 1) << std::endl;
+            return false;
+        }
+    }
+
+    if (!found_exec) {
+        std::cerr << "[SYSTEM] No EOF block (0x78) found in: " << path << std::endl;
+        return false;
+    }
+
+    cpu.set_pc(exec_addr);
+    std::cout << "[SYSTEM] Loaded '" << cas_name << "' from " << path
+              << " (" << blocks_loaded << " blocks), exec 0x"
+              << std::hex << exec_addr << std::endl;
+    return true;
+}
 
 // ============================================================================
 // ROM entry points for cassette operations (Level II BASIC)
@@ -35,11 +156,11 @@ static std::string extract_filename(const Bus& bus) {
     return result;
 }
 
-// Find a CAS file: try lowercase.cas then UPPERCASE.CAS directly.
+// Find a CAS file matching filename prefix (case-insensitive).
 // If filename is empty (bare CLOAD), pick the first .cas alphabetically.
-static std::string find_cas_file(const std::string& filename) {
+static std::string find_cas_file(const std::string& filename, const char* tag = "CLOAD") {
     namespace fs = std::filesystem;
-    std::cout << "[CLOAD] Searching for filename: '" << filename << "'" << std::endl;
+    std::cout << "[" << tag << "] Searching for filename: '" << filename << "'" << std::endl;
     if (!fs::exists("software")) return "";
 
     std::vector<std::string> cas_files;
@@ -59,11 +180,11 @@ static std::string find_cas_file(const std::string& filename) {
         }
     }
     if (cas_files.empty()) {
-        std::cout << "[CLOAD] No matching .cas file found for: '" << filename << "'" << std::endl;
+        std::cout << "[" << tag << "] No matching .cas file found for: '" << filename << "'" << std::endl;
         return "";
     }
     std::sort(cas_files.begin(), cas_files.end());
-    std::cout << "[CLOAD] Partial match, picking: '" << cas_files.front() << "'" << std::endl;
+    std::cout << "[" << tag << "] Picking: '" << cas_files.front() << "'" << std::endl;
     return cas_files.front();
 }
 
@@ -120,6 +241,10 @@ int main(int /*argc*/, char* /*argv*/[]) {
     int cload_byte_count = 0;
     size_t cload_sync_pos = 0;
 
+
+    // SYSTEM state: set when 0x02CE fires, cleared on success or when CLOAD
+    // intercept sees it (to suppress CLOAD from also firing for the same file).
+    bool system_active = false;
     while (display.is_running()) {
         // Handle input
         display.handle_events(keyboard_matrix);
@@ -130,25 +255,47 @@ int main(int /*argc*/, char* /*argv*/[]) {
             // --- PC Watch: intercept CLOAD/CSAVE entry points ---
             uint16_t pc = cpu.get_pc();
 
-            if (pc == ROM_SYNC_SEARCH && bus.get_cassette_state() == CassetteState::IDLE) {
-                std::string fname = extract_filename(bus);
-                std::string path = find_cas_file(fname);
-                if (!path.empty() && bus.load_cas_file(path)) {
-                    bus.set_cas_filename(fname.empty() ? "(auto)" : fname);
-                    bus.start_playback();
 
-                    const auto& cas = bus.get_cas_data();
-                    cload_active = true;
-                    cload_realigned = false;
-                    cload_byte_count = 0;
-                    cload_sync_pos = 0;
-                    for (size_t i = 0; i < cas.size(); i++) {
-                        if (cas[i] == 0xA5) { cload_sync_pos = i; break; }
+            // SYSTEM fast loader: intercept at LOPHD (0x02CE) before cassette
+            // motor turns on, so CSRDON (0x0293) is never reached for SYSTEM.
+            if (pc == ROM_SYSTEM_ENTRY) {
+                system_active = true;  // suppress CLOAD intercept if load fails
+                std::string fname = extract_filename(bus);
+                std::string path = find_cas_file(fname, "SYSTEM");
+                if (!path.empty()) {
+                    if (load_system_cas(path, bus, cpu)) {
+                        system_active = false;  // success — CLOAD won't fire
                     }
-                    size_t data_bytes = cas.size() - cload_sync_pos - 1;
-                    std::cout << "CLOAD: " << path << " (" << data_bytes << " bytes)" << std::endl;
+                    // on failure: leave system_active=true so CLOAD is skipped
+                }
+                // no file found: system_active stays true, CLOAD skipped
+            }
+
+            if (pc == ROM_SYNC_SEARCH && bus.get_cassette_state() == CassetteState::IDLE) {
+                if (system_active) {
+                    // CSRDON reached from SYSTEM path after a failed fast-load;
+                    // skip CLOAD setup so we don't try to play a SYSTEM file as BASIC.
+                    system_active = false;
                 } else {
-                    std::cout << "CLOAD: no .cas file found" << std::endl;
+                    std::string fname = extract_filename(bus);
+                    std::string path = find_cas_file(fname);
+                    if (!path.empty() && bus.load_cas_file(path)) {
+                        bus.set_cas_filename(fname.empty() ? "(auto)" : fname);
+                        bus.start_playback();
+
+                        const auto& cas = bus.get_cas_data();
+                        cload_active = true;
+                        cload_realigned = false;
+                        cload_byte_count = 0;
+                        cload_sync_pos = 0;
+                        for (size_t i = 0; i < cas.size(); i++) {
+                            if (cas[i] == 0xA5) { cload_sync_pos = i; break; }
+                        }
+                        size_t data_bytes = cas.size() - cload_sync_pos - 1;
+                        std::cout << "CLOAD: " << path << " (" << data_bytes << " bytes)" << std::endl;
+                    } else {
+                        std::cout << "CLOAD: no .cas file found" << std::endl;
+                    }
                 }
             }
 
