@@ -330,6 +330,8 @@ int main(int argc, char* argv[]) {
     } catch (const std::exception& e) {
         std::cerr << "ROM Load Failed: " << e.what() << std::endl;
         std::cerr << "Place your TRS-80 ROM in roms/level2.rom" << std::endl;
+        display.cleanup();
+        return 1;
     }
 
     cpu.reset();

@@ -116,6 +116,7 @@ Window: 1152×576 (3× scale)
 - Workflow: make change → user tests → then commit + push (never push untested)
 - No auto-commit; always wait for user confirmation before git push
 - Turbo mode auto-triggers on type_queue, reverts when queue empties
+- When a bug report is ambiguous (e.g. unclear which code path or invocation is failing), **ask a clarifying question rather than guessing**. Do not assume and proceed with analysis of the wrong path.
 
 ## Current Task / Bug Being Investigated
 **SCARFMAN freeze during attract mode**
