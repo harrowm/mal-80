@@ -13,6 +13,7 @@
 #include <queue>
 #include <cctype>
 #include <chrono>
+#include <array>
 #include <SDL.h>
 #include "cpu/z80.hpp"
 #include "system/Bus.hpp"
@@ -135,6 +136,19 @@ static bool load_system_cas(const std::string& path, Bus& bus, Z80& cpu) {
     return true;
 }
 
+// Peek at a .cas file's type byte (after leader + 0xA5 sync).
+// Returns true if it's a SYSTEM (machine language) file (type byte == 0x55).
+static bool is_system_cas(const std::string& path) {
+    std::ifstream f(path, std::ios::binary);
+    if (!f.is_open()) return false;
+    std::vector<uint8_t> buf((std::istreambuf_iterator<char>(f)), {});
+    size_t i = 0;
+    while (i < buf.size() && buf[i] == 0x00) i++;  // skip leader
+    if (i >= buf.size() || buf[i] != 0xA5) return false;
+    i++;  // sync
+    return i < buf.size() && buf[i] == 0x55;
+}
+
 // ============================================================================
 // ROM entry points for cassette operations (Level II BASIC)
 // ============================================================================
@@ -227,6 +241,52 @@ static void load_bas_file(const std::string& path, std::queue<uint8_t>& q) {
               << q.size() << " chars) from " << path << std::endl;
 }
 
+// ============================================================================
+// Circular trace buffer — records the last N instructions before a freeze
+// ============================================================================
+constexpr size_t TRACE_BUF_SIZE = 500;
+
+struct TraceEntry {
+    uint16_t pc, sp;
+    uint8_t  a, f, b, c, d, e, h, l;
+    uint16_t ix, iy;
+    uint8_t  i_reg, im;
+    bool     iff1, iff2, halted;
+    uint64_t ticks;  // cumulative T-states at this instruction
+};
+
+static void dump_trace(const std::array<TraceEntry, TRACE_BUF_SIZE>& buf,
+                       size_t head, size_t count, const Bus& bus) {
+    std::ofstream out("trace.log", std::ios::trunc);
+    if (!out.is_open()) {
+        std::cerr << "[TRACE] Could not open trace.log\n";
+        return;
+    }
+    out << "# Mal-80 freeze trace — last " << count << " instructions\n";
+    out << "# TICKS       PC   SP   AF   BC   DE   HL   IX   IY  I IM IFF OP\n";
+
+    size_t start = (count < TRACE_BUF_SIZE) ? 0 : head;
+    for (size_t n = 0; n < count; n++) {
+        const TraceEntry& e = buf[(start + n) % TRACE_BUF_SIZE];
+        uint8_t op0 = bus.peek(e.pc);
+        uint8_t op1 = bus.peek(e.pc + 1);
+        char line[128];
+        snprintf(line, sizeof(line),
+            "%12llu  %04X %04X  %02X%02X %04X %04X %04X  %04X %04X  %02X %d %d%d  %02X %02X%s%s\n",
+            (unsigned long long)e.ticks,
+            e.pc, e.sp,
+            e.a, e.f, (e.b << 8) | e.c, (e.d << 8) | e.e, (e.h << 8) | e.l,
+            e.ix, e.iy,
+            e.i_reg, e.im, (int)e.iff1, (int)e.iff2,
+            op0, op1,
+            e.halted ? " HALT" : "",
+            e.iff1   ? "" : " DI");
+        out << line;
+    }
+    out.close();
+    std::cerr << "[TRACE] Dumped " << count << " instructions to trace.log\n";
+}
+
 static void crash_handler(int sig) {
     void* bt[32];
     int n = backtrace(bt, 32);
@@ -237,7 +297,7 @@ static void crash_handler(int sig) {
 
 enum class SpeedMode { NORMAL, TURBO };
 
-int main(int /*argc*/, char* /*argv*/[]) {
+int main(int argc, char* argv[]) {
     signal(SIGSEGV, crash_handler);
     signal(SIGBUS, crash_handler);
     signal(SIGABRT, crash_handler);
@@ -245,6 +305,14 @@ int main(int /*argc*/, char* /*argv*/[]) {
     std::cout << "║         Welcome to Mal-80              ║" << std::endl;
     std::cout << "║      TRS-80 Model I Emulator           ║" << std::endl;
     std::cout << "╚════════════════════════════════════════╝" << std::endl;
+
+    // Parse command-line arguments
+    std::string cli_load_name;  // value of --load <name>, empty if not given
+    for (int i = 1; i < argc; i++) {
+        if (std::strcmp(argv[i], "--load") == 0 && i + 1 < argc) {
+            cli_load_name = argv[++i];
+        }
+    }
 
     Bus bus;
     Z80 cpu(bus);
@@ -300,6 +368,60 @@ int main(int /*argc*/, char* /*argv*/[]) {
     // Keyboard injection queue: drained one char at a time via $KEY intercept.
     // Used to type BASIC programs loaded from .bas text files.
     std::queue<uint8_t> type_queue;
+
+    // --load autoload state
+    std::string cli_autoload_path;  // non-empty: CSRDON intercept uses this path
+    bool cli_autorun = false;       // true: queue "RUN\n" when cassette load finishes
+
+    if (!cli_load_name.empty()) {
+        std::string path = find_cas_file(cli_load_name, "LOAD");
+        if (path.empty()) {
+            std::cerr << "[LOAD] No file found matching: " << cli_load_name << std::endl;
+        } else {
+            namespace fs = std::filesystem;
+            std::string ext = fs::path(path).extension().string();
+            std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
+
+            if (ext == ".cas") {
+                if (is_system_cas(path)) {
+                    // Machine-language file: type SYSTEM then filename separately.
+                    // TRS-80 SYSTEM command is interactive: "SYSTEM\n" triggers the
+                    // loader which prints "*?" and reads the filename via $KEY.
+                    // Leading \n answers the ROM cold-boot "MEMORY SIZE?" prompt first.
+                    namespace fs = std::filesystem;
+                    std::string stem = fs::path(path).stem().string();
+                    enqueue_text(type_queue, "\nSYSTEM\n" + stem + "\n");
+                } else {
+                    // BASIC cassette: let CSRDON intercept handle playback, then autorun
+                    cli_autoload_path = path;
+                    enqueue_text(type_queue, "CLOAD\n");
+                    cli_autorun = true;
+                }
+            } else if (ext == ".bas") {
+                // Text BASIC file: inject keystrokes then RUN
+                load_bas_file(path, type_queue);
+                enqueue_text(type_queue, "RUN\n");
+            }
+        }
+    }
+
+    // Circular trace buffer
+    std::array<TraceEntry, TRACE_BUF_SIZE> trace_buf{};
+    size_t   trace_head  = 0;
+    size_t   trace_count = 0;
+    uint64_t total_ticks = 0;
+
+    // Freeze detector: if all PCs in the last FREEZE_WINDOW steps fall within
+    // a 64-byte range, count T-states spent there; dump after FREEZE_TICKS.
+    constexpr size_t   FREEZE_WINDOW    = 64;
+    constexpr uint64_t FREEZE_TICKS     = 3'000'000;  // ~1.7 seconds of game time
+    uint64_t           freeze_ticks_acc = 0;
+    bool               freeze_dumped    = false;
+    // Rolling PC window for freeze detection
+    std::array<uint16_t, FREEZE_WINDOW> pc_window{};
+    size_t pc_win_pos = 0;
+    bool   pc_win_full = false;
+
     while (display.is_running()) {
         // Handle input
         display.handle_events(keyboard_matrix);
@@ -341,8 +463,17 @@ int main(int /*argc*/, char* /*argv*/[]) {
                     // skip CLOAD setup so we don't try to play a SYSTEM file as BASIC.
                     system_active = false;
                 } else {
-                    std::string fname = extract_filename(bus);
-                    std::string path = find_cas_file(fname);
+                    // Use CLI-supplied path if set, otherwise search by filename in RAM
+                    std::string fname;
+                    std::string path;
+                    if (!cli_autoload_path.empty()) {
+                        path = cli_autoload_path;
+                        cli_autoload_path.clear();
+                        std::cout << "[CLOAD] Using CLI autoload: " << path << std::endl;
+                    } else {
+                        fname = extract_filename(bus);
+                        path = find_cas_file(fname);
+                    }
                     if (path.empty()) {
                         std::cout << "CLOAD: no file found" << std::endl;
                     } else {
@@ -407,6 +538,10 @@ int main(int /*argc*/, char* /*argv*/[]) {
             if (cload_active && bus.get_cassette_state() == CassetteState::IDLE) {
                 fprintf(stderr, "[CLOAD] Complete: %d bytes read\n", cload_byte_count);
                 cload_active = false;
+                if (cli_autorun) {
+                    enqueue_text(type_queue, "RUN\n");
+                    cli_autorun = false;
+                }
             }
 
             if (pc == ROM_WRITE_LEADER && bus.get_cassette_state() == CassetteState::IDLE) {
@@ -435,14 +570,96 @@ int main(int /*argc*/, char* /*argv*/[]) {
                 continue;
             }
 
+            // Record this instruction in the circular trace buffer
+            {
+                TraceEntry& te = trace_buf[trace_head];
+                te.pc = pc; te.sp = cpu.get_sp();
+                te.a  = cpu.get_a();  te.f = cpu.get_f();
+                te.b  = cpu.get_b();  te.c = cpu.get_c();
+                te.d  = cpu.get_d();  te.e = cpu.get_e();
+                te.h  = cpu.get_h();  te.l = cpu.get_l();
+                te.ix = cpu.get_ix(); te.iy = cpu.get_iy();
+                te.i_reg = cpu.get_i(); te.im = cpu.get_im();
+                te.iff1 = cpu.get_iff1(); te.iff2 = cpu.get_iff2();
+                te.halted = cpu.get_halted();
+                te.ticks = total_ticks;
+                trace_head = (trace_head + 1) % TRACE_BUF_SIZE;
+                if (trace_count < TRACE_BUF_SIZE) trace_count++;
+            }
+
+            // Freeze detection: count how many consecutive steps landed on the
+            // same PC.  A HALT loop or any single tight spin will trip this fast.
+            // Also catches multi-instruction tight loops via the 64-byte window
+            // check (kept as secondary test).
+            if (!freeze_dumped) {
+                // Fast path: same PC repeated
+                static uint16_t last_freeze_pc = 0xFFFF;
+                static uint64_t same_pc_streak  = 0;
+                if (pc == last_freeze_pc) {
+                    same_pc_streak++;
+                } else {
+                    last_freeze_pc = pc;
+                    same_pc_streak = 0;
+                }
+                // Slow path: PC stays within 64-byte window
+                pc_window[pc_win_pos] = pc;
+                pc_win_pos = (pc_win_pos + 1) % FREEZE_WINDOW;
+                if (!pc_win_full && pc_win_pos == 0) pc_win_full = true;
+
+                bool tight = (same_pc_streak > 100'000);  // single-address loop
+                if (!tight && pc_win_full) {
+                    uint16_t lo = pc_window[0], hi = pc_window[0];
+                    for (uint16_t p : pc_window) {
+                        if (p < lo) lo = p;
+                        if (p > hi) hi = p;
+                    }
+                    if (hi - lo < 64) {
+                        freeze_ticks_acc += 4;
+                    } else {
+                        freeze_ticks_acc = 0;
+                    }
+                    tight = (freeze_ticks_acc >= FREEZE_TICKS);
+                }
+
+                if (tight) {
+                    std::cerr << "[FREEZE] Detected at PC=0x"
+                              << std::hex << pc << std::dec
+                              << " streak=" << same_pc_streak
+                              << " ticks=" << total_ticks << "\n";
+                    dump_trace(trace_buf, trace_head, trace_count, bus);
+                    freeze_dumped = true;
+                }
+            }
+
             int ticks = cpu.step();
             bus.add_ticks(ticks);
             frame_t_states += ticks;
+            total_ticks += ticks;
 
-            // Check for interrupts
-            if (bus.interrupt_pending()) {
+            // Deliver maskable interrupt if pending and CPU has interrupts enabled.
+            // TRS-80 Model 1 uses IM 1: RST 38h (push PC, jump to 0x0038).
+            // Z80 INT acceptance: IFF2 ← IFF1 (saved for RETI/RETN), IFF1 ← 0.
+            // CRITICAL: do NOT set IFF2=false — RETI does IFF1=IFF2, so if IFF2
+            // is cleared here, RETI permanently disables interrupts.
+            if (bus.interrupt_pending() && cpu.get_iff1()) {
                 bus.clear_interrupt();
-                // TODO: Trigger Z80 INT (requires CPU interrupt support)
+                cpu.set_iff2(cpu.get_iff1());  // save IFF1 (true) into IFF2
+                cpu.set_iff1(false);           // disable interrupts for ISR
+                if (cpu.get_halted()) {
+                    // Wake from HALT: execution continues at instruction after HALT
+                    cpu.set_halted(false);
+                    cpu.set_pc(cpu.get_pc() + 1);
+                }
+                // Push current PC onto stack
+                uint16_t sp  = cpu.get_sp() - 2;
+                uint16_t ret = cpu.get_pc();
+                bus.write(sp,     ret & 0xFF);
+                bus.write(sp + 1, ret >> 8);
+                cpu.set_sp(sp);
+                cpu.set_pc(0x0038);  // IM1 vector
+                bus.add_ticks(13);   // IM1 latency: 2 (sample) + 11 (push+jump)
+                frame_t_states += 13;
+                total_ticks    += 13;
             }
 
             // Auto-stop recording after idle timeout
@@ -488,6 +705,12 @@ int main(int /*argc*/, char* /*argv*/[]) {
         frame_start = std::chrono::steady_clock::now();
 
 
+    }
+
+    // Always dump trace on exit so we can inspect the last N instructions
+    // even if the freeze detector didn't trigger.
+    if (trace_count > 0) {
+        dump_trace(trace_buf, trace_head, trace_count, bus);
     }
 
     display.cleanup();

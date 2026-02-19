@@ -38,11 +38,21 @@ public:
     uint16_t get_bc() const { return reg.bc; }
     uint16_t get_de() const { return reg.de; }
     uint16_t get_hl() const { return reg.hl; }
+    uint16_t get_ix() const { return reg.ix; }
+    uint16_t get_iy() const { return reg.iy; }
+    uint8_t  get_i()  const { return reg.i;  }
+    bool     get_iff1()    const { return reg.iff1;   }
+    bool     get_iff2()    const { return reg.iff2;   }
+    uint8_t  get_im()      const { return reg.im;     }
+    bool     get_halted()  const { return reg.halted; }
 
     // Debug mutation (for test harnesses and ROM intercepts)
-    void set_pc(uint16_t val) { reg.pc = val; }
-    void set_sp(uint16_t val) { reg.sp = val; }
-    void set_a(uint8_t val)   { reg.a  = val; }
+    void set_pc(uint16_t val)     { reg.pc     = val; }
+    void set_sp(uint16_t val)     { reg.sp     = val; }
+    void set_a(uint8_t val)       { reg.a      = val; }
+    void set_iff1(bool val)       { reg.iff1   = val; }
+    void set_iff2(bool val)       { reg.iff2   = val; }
+    void set_halted(bool val)     { reg.halted = val; }
 
 private:
     // ------------------------------------------------------------------------

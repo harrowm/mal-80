@@ -114,6 +114,11 @@ void Z80::write_mem(uint16_t addr, uint8_t val) {
 
 uint8_t Z80::fetch(bool is_m1) {
     uint8_t val = read_mem(reg.pc++, is_m1);
+    // Z80: lower 7 bits of R increment on every M1 (opcode fetch) cycle.
+    // Bit 7 is preserved. This makes LD A,R useful as a cheap PRNG source.
+    if (is_m1) {
+        reg.r = (reg.r & 0x80) | ((reg.r + 1) & 0x7F);
+    }
     return val;
 }
 
