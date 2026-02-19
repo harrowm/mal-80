@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(make*)",
+      "Bash(./mal-80*)",
+      "Write(/Users/malcolm/mal-80/trace.log)"
+    ]
+  }
+}
