@@ -5,6 +5,7 @@
 #include "SoftwareLoader.hpp"
 #include "KeyInjector.hpp"
 #include "Debugger.hpp"
+#include "Sound.hpp"
 #include <chrono>
 #include <cstring>
 
@@ -28,6 +29,7 @@ private:
     SoftwareLoader loader_;
     KeyInjector    injector_;
     Debugger       debugger_;
+    Sound          sound_;
 
     uint8_t keyboard_matrix_[8]{};
 

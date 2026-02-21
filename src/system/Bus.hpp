@@ -72,9 +72,12 @@ public:
     uint8_t get_vram_byte(uint16_t vram_addr) const;
     void set_keyboard_matrix(uint8_t* km) { keyboard_matrix = km; }
 
-    // Cassette Interface (Port 0xFF)
+    // Cassette / Sound Interface (Port 0xFF)
     uint8_t read_port(uint8_t port);
     void write_port(uint8_t port, uint8_t val);
+    // Bit 1 of port 0xFF is the cassette data output line.
+    // Games toggle this at audio frequencies to produce sound.
+    bool get_sound_bit() const { return (cas_prev_port_val & 0x02) != 0; }
 
     // Cassette File Operations
     bool load_cas_file(const std::string& path);

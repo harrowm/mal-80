@@ -46,6 +46,7 @@ bool Emulator::init(int argc, char* argv[]) {
     if (!cli_load_name.empty())
         loader_.setup_from_cli(cli_load_name, injector_);
 
+    sound_.init();  // non-fatal: logs a warning if SDL audio unavailable
     return true;
 }
 
@@ -56,6 +57,10 @@ void Emulator::run() {
         // Auto-select speed: turbo while keyboard injection is active
         SpeedMode desired = injector_.is_active() ? SpeedMode::TURBO : user_speed_;
         if (desired != cur_speed_) {
+            // When returning to normal speed, discard any silence that
+            // accumulated during turbo so game audio starts immediately.
+            if (desired == SpeedMode::NORMAL)
+                sound_.clear();
             cur_speed_          = desired;
             turbo_render_count_ = 0;
             frame_start_        = std::chrono::steady_clock::now();
@@ -64,6 +69,12 @@ void Emulator::run() {
         uint64_t t_budget = (cur_speed_ == SpeedMode::TURBO)
                             ? TURBO_T_STATES : T_STATES_PER_FRAME;
         step_frame(t_budget);
+
+        // Only push audio to SDL in normal mode.  In turbo mode the Z80 runs
+        // at 100× speed, making all tones inaudible — don't fill the queue
+        // with silence that would delay real game audio.
+        if (cur_speed_ == SpeedMode::NORMAL)
+            sound_.flush();
 
         update_title();
 
@@ -78,6 +89,7 @@ void Emulator::run() {
     }
 
     debugger_.dump(bus_);
+    sound_.cleanup();
     display_.cleanup();
     std::cout << "Mal-80 shutdown complete.\n";
 }
@@ -103,6 +115,13 @@ void Emulator::step_frame(uint64_t t_budget) {
         bus_.add_ticks(ticks);
         frame_ts     += ticks;
         total_ticks_ += ticks;
+
+        // Sample the sound bit after the instruction (port 0xFF may have changed).
+        // Mute during cassette I/O (FSK signal would be noise) and turbo mode
+        // (Z80 running 100× fast makes all tones inaudibly high).
+        bool sound_active = (cur_speed_ == SpeedMode::NORMAL) &&
+                            (bus_.get_cassette_state() == CassetteState::IDLE);
+        sound_.update(bus_.get_sound_bit(), ticks, sound_active);
 
         deliver_interrupt(frame_ts);
 
