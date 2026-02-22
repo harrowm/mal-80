@@ -59,7 +59,7 @@ public:
 
 private:
     SDL_AudioDeviceID device_     = 0;
-    float             lp_state_   = 0.0f;  // LP filter state (–1.0 … +1.0)
+    float             lp_state_   = -1.0f; // LP filter state; init to idle (-1=bit low)
     float             hp_state_   = 0.0f;  // DC-blocking HP filter state
     uint64_t          ticks_acc_  = 0;     // Sub-sample tick accumulator
     std::vector<int16_t> buf_;             // Samples for the current frame

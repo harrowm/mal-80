@@ -3,7 +3,6 @@
 #include "CharRom.hpp"
 #include "../system/Bus.hpp"
 #include <iostream>
-#include <cstdio>
 #include <cstring>
 
 // ============================================================================
@@ -259,15 +258,6 @@ bool Display::handle_events(uint8_t* keyboard_matrix) {
 
         if (event.type == SDL_KEYDOWN || event.type == SDL_KEYUP) {
             bool pressed = (event.type == SDL_KEYDOWN);
-            // Debug: log first 20 key events to help diagnose spurious keypresses
-            static int dbg_count = 0;
-            if (dbg_count < 20) {
-                fprintf(stderr, "[KEY] %s scancode=%d sym=0x%X\n",
-                        pressed ? "DOWN" : "UP  ",
-                        (int)event.key.keysym.scancode,
-                        (unsigned)event.key.keysym.sym);
-                dbg_count++;
-            }
             SDL_Scancode sc = event.key.keysym.scancode;
             bool host_shifted = (event.key.keysym.mod & KMOD_SHIFT) != 0;
             

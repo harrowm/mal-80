@@ -84,23 +84,7 @@ uint8_t Bus::read(uint16_t addr, bool is_m1) {
                     value |= keyboard_matrix[row];
                 }
             }
-            // Debug: log first non-zero keyboard reads to diagnose spurious input
-            if (value != 0) {
-                static int kbd_dbg = 0;
-                if (kbd_dbg < 20) {
-                    kbd_dbg++;
-                    fprintf(stderr,
-                        "[KBDBUG] addr=0x%04X sel=0x%02X result=0x%02X "
-                        "matrix=[%02X %02X %02X %02X %02X %02X %02X %02X] "
-                        "ticks=%llu\n",
-                        addr, row_select, value,
-                        keyboard_matrix[0], keyboard_matrix[1],
-                        keyboard_matrix[2], keyboard_matrix[3],
-                        keyboard_matrix[4], keyboard_matrix[5],
-                        keyboard_matrix[6], keyboard_matrix[7],
-                        (unsigned long long)global_t_states);
-                }
-            }
+
         } else {
             value = 0x00;  // No keyboard connected
         }
