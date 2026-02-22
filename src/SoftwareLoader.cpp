@@ -209,6 +209,7 @@ void SoftwareLoader::setup_from_cli(const std::string& name,
 
 void SoftwareLoader::on_system_entry(uint16_t pc, Z80& cpu, Bus& bus) {
     if (pc != ROM_SYSTEM_ENTRY) return;
+    fprintf(stderr, "[DBG] on_system_entry fired PC=0x%04X\n", pc);
 
     system_active_ = true;
     std::string fname = extract_filename(bus);
@@ -222,6 +223,7 @@ void SoftwareLoader::on_cload_entry(uint16_t pc, Z80& cpu, Bus& bus,
                                     KeyInjector& injector) {
     if (pc != ROM_SYNC_SEARCH) return;
     if (bus.get_cassette_state() != CassetteState::IDLE) return;
+    fprintf(stderr, "[DBG] on_cload_entry fired PC=0x%04X\n", pc);
 
     if (system_active_) {
         // CSRDON reached after a failed SYSTEM fast-load — skip, don't CLOAD

@@ -36,6 +36,10 @@ void KeyInjector::load_bas(const std::string& path) {
 bool KeyInjector::handle_intercept(uint16_t pc, Z80& cpu, Bus& bus,
                                    uint64_t& frame_ts) {
     if (pc != ROM_KEY || queue_.empty()) return false;
+    fprintf(stderr, "[DBG] KeyInjector firing: char=0x%02X ('%c') queue=%zu\n",
+            queue_.front(),
+            (queue_.front() >= 0x20 && queue_.front() < 0x7F) ? (char)queue_.front() : '?',
+            queue_.size());
 
     uint8_t  ch       = queue_.front(); queue_.pop();
     uint16_t sp       = cpu.get_sp();

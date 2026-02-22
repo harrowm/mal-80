@@ -38,14 +38,16 @@ bool Debugger::check_freeze(uint16_t pc) {
     win_pos_ = (win_pos_ + 1) % FREEZE_WINDOW;
     if (!win_full_ && win_pos_ == 0) win_full_ = true;
 
-    bool tight = (streak_ > 100'000);
+    // Only consider tight-loop freezes in RAM (>= 0x4000).
+    // The ROM's $KEY wait loop at 0x0049 is intentional; don't false-fire on it.
+    bool tight = (streak_ > 100'000) && (pc >= 0x4000);
     if (!tight && win_full_) {
         uint16_t lo = pc_window_[0], hi = pc_window_[0];
         for (uint16_t p : pc_window_) {
             if (p < lo) lo = p;
             if (p > hi) hi = p;
         }
-        if (hi - lo < 64) {
+        if (lo >= 0x4000 && hi - lo < 64) {
             ticks_acc_ += 4;
         } else {
             ticks_acc_ = 0;
