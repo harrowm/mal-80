@@ -3,8 +3,9 @@
 ## Project Overview
 C++20 TRS-80 Model I emulator targeting macOS M4 (arm64). Z80 CPU passes all
 67 ZEXALL tests. Has working CLOAD/CSAVE cassette emulation, SYSTEM (machine
-language loader), .bas file injection, turbo mode, --load CLI, and a circular
-trace buffer with freeze detector.
+language loader), .bas file injection, turbo mode, --load CLI, 1-bit audio
+emulation (port 0xFF with IIR filters), and a circular trace buffer with freeze
+detector.
 
 ## Build & Run
 ```
@@ -29,6 +30,7 @@ src/
 ├── SoftwareLoader.hpp/cpp File finding/parsing, ROM intercepts (SYSTEM/CLOAD/CSAVE)
 ├── KeyInjector.hpp/cpp    Keyboard injection queue + $KEY intercept
 ├── Debugger.hpp/cpp       Circular trace buffer + freeze detector
+├── Sound.hpp/cpp          1-bit audio: IIR LP/HP filters, SDL_QueueAudio push model
 ├── cpu/
 │   ├── z80.hpp            Z80 CPU declaration
 │   └── z80.cpp            Z80 opcode implementations (~1800 LOC)
@@ -37,7 +39,8 @@ src/
 │   └── Bus.cpp            Memory R/W, cassette FSK playback/recording
 └── video/
     ├── Display.hpp        SDL display constants and class
-    └── Display.cpp        SDL rendering, keyboard matrix, character ROM
+    ├── Display.cpp        SDL rendering, keyboard matrix, character ROM
+    └── CharRom.hpp        TRS-80 MCM6670P character generator ROM data (128×8 bytes)
 
 software/                  .cas and .bas game/program files
 roms/level2.rom            TRS-80 Level II BASIC ROM (required, not committed)
@@ -101,6 +104,15 @@ Methods: `record(cpu, ticks)`, `check_freeze(pc)` → bool,
 `dump(bus)`, `has_entries()`.
 Writes `trace.log` on freeze detection and again on clean exit.
 
+### `Sound`
+1-bit audio emulation (port 0xFF bit 1, the cassette output line).
+Methods: `init()`, `cleanup()`, `update(sound_bit, ticks, active)`, `flush()`, `clear()`.
+Uses SDL_QueueAudio (push model): `update()` accumulates samples per instruction,
+`flush()` is called once per normal-mode frame. Muted during cassette I/O and turbo
+mode; `clear()` purges buffered silence when returning to normal speed.
+Two-stage filter: IIR low-pass (α=0.363, ~4 kHz cutoff) + DC-blocking high-pass
+(α=0.999, ~7 Hz cutoff) to match the original hardware RC filter and prevent pops.
+
 ## Key Features Implemented
 
 ### SYSTEM command (machine language loader)
@@ -161,6 +173,16 @@ Window: 1152×576 (3× scale)
 60Hz = 29498 T-states/frame (VIDEO_T_STATES_PER_FRAME in Bus.hpp)
 ```
 
+## Sound Constants (Sound.hpp)
+```
+SAMPLE_RATE      = 44100 Hz
+TICKS_PER_SAMPLE = 40    T-states/sample (1,774,000 / 44,100)
+LP_ALPHA         = 0.363  IIR low-pass α (~4 kHz cutoff at 44100 Hz)
+HP_ALPHA         = 0.999  DC-blocking high-pass α (~7 Hz cutoff)
+AMPLITUDE        = 16384  int16_t peak (half of max, leaves headroom)
+MAX_QUEUED_FRAMES = 4     cap on SDL audio queue (~67 ms)
+```
+
 ## User Preferences
 - Workflow: make change → user tests → then commit + push (never push untested)
 - No auto-commit; always wait for user confirmation before git push
@@ -168,38 +190,12 @@ Window: 1152×576 (3× scale)
 - When a bug report is ambiguous (e.g. unclear which code path is failing),
   **ask a clarifying question rather than guessing**.
 
-## Current Task / Bug Being Investigated
-**SCARFMAN freeze during attract mode**
-
-SCARFMAN loads fine, plays opening scene (Pac-Man chased across screen), then
-during attract mode the Pac-Man moves left twice then the emulator freezes.
-
-### Plan
-1. ~~Add `--load <filename>` CLI argument~~ ✓ Done
-2. ~~Add circular trace buffer (500 entries)~~ ✓ Done
-3. ~~Add freeze detection — auto-dumps `trace.log`~~ ✓ Done
-4. Run `./mal-80 --load scarfman`, let it freeze, analyse trace.log
-
-### Working Hypothesis
-Likely a tight polling loop waiting for:
-- An interrupt that isn't arriving correctly
-- A port read returning wrong value
-- A keyboard scan returning unexpected data
-
-Z80 is solid (all ZEXALL pass), so CPU instructions are not the issue.
-Interrupt delivery or I/O port behaviour most likely suspect.
-
-### Approved Tools for Debug Loop
-- Writing to `trace.log` in project root is auto-approved
-- Build + run cycle: `make && ./mal-80 --load scarfman`
-- Evaluate trace.log output after freeze
-
 ## Recent Commits
 ```
+ecb7a93  Refactor audio filter initialization and remove debug logging for keyboard events
+670380d  Enhance debugging output for key events and keyboard reads; refine freeze detection logic in Debugger
+a5d602d  Add sound emulation support with SDL audio integration
+f33133b  Update CLAUDE.md and README to reflect refactored architecture
+6540efa  Implement Debugger, Emulator, KeyInjector, and SoftwareLoader classes
 5d41b38  Add clarification on handling ambiguous bug reports; improve error handling in main
-d72fc24  Add settings.json for permission configuration
-08b3660  Fix Z80 R register increment; add --load CLI, IM1 interrupts, trace buffer
-7e93ddb  Add turbo mode for fast .bas file injection
-34839d6  Add .bas file loading via keyboard injection
-55ceca7  Implement SYSTEM command fast loader
 ```

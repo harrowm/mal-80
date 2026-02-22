@@ -202,6 +202,7 @@ void SoftwareLoader::setup_from_cli(const std::string& name,
             cli_autorun_ = true;
         }
     } else if (ext == ".bas") {
+        injector.enqueue("\n");   // answer cold-boot MEMORY SIZE? prompt
         injector.load_bas(path);
         injector.enqueue("RUN\n");
     }

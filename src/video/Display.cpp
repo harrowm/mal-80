@@ -81,7 +81,7 @@ bool Display::init(const std::string& title) {
     // Create texture for the 128×48 framebuffer
     screen_texture = SDL_CreateTexture(
         renderer,
-        SDL_PIXELFORMAT_RGBA8888,
+        SDL_PIXELFORMAT_ARGB8888,  // = MTLPixelFormatBGRA8Unorm on little-endian ARM64, no conversion
         SDL_TEXTUREACCESS_STREAMING,
         TRS80_WIDTH,
         TRS80_HEIGHT

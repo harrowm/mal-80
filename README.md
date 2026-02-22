@@ -16,6 +16,7 @@ A TRS-80 Model I emulator with accurate Z80 emulation, cassette loading, and ins
 - **Z80 CPU** — passes all 67 ZEXALL tests
 - **Instant software loading** — SYSTEM (.cas) and BASIC (.bas/.cas) files load in milliseconds via ROM intercepts, no FSK emulation wait
 - **Turbo mode** — 100× speed during BASIC injection, automatic throttle back to 60 Hz for gameplay
+- **1-bit audio** — port 0xFF square-wave output with IIR low-pass + DC-blocking filter via SDL audio
 - **CLOAD / CSAVE** — full FSK cassette emulation for normal tape workflows
 - **`--load <name>`** — auto-load any software file from the command line
 - **Freeze detector** — circular trace buffer auto-dumps `trace.log` if the emulator loops
@@ -66,6 +67,7 @@ mal-80/
     ├── SoftwareLoader.hpp/cpp  File loading, ROM intercepts (SYSTEM/CLOAD/CSAVE)
     ├── KeyInjector.hpp/cpp Keyboard injection queue + $KEY intercept
     ├── Debugger.hpp/cpp    Circular trace buffer + freeze detector
+    ├── Sound.hpp/cpp       1-bit audio: IIR filters + SDL_QueueAudio
     ├── cpu/
     │   ├── z80.hpp         Z80 CPU declaration
     │   └── z80.cpp         All opcodes (~1800 LOC)
@@ -74,7 +76,8 @@ mal-80/
     │   └── Bus.cpp         Memory R/W, FSK cassette playback/recording
     └── video/
         ├── Display.hpp     SDL display constants
-        └── Display.cpp     SDL rendering, keyboard matrix, character ROM
+        ├── Display.cpp     SDL rendering, keyboard matrix, character ROM
+        └── CharRom.hpp     TRS-80 MCM6670P character generator data
 ```
 
 ---

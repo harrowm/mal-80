@@ -38,10 +38,11 @@ constexpr uint16_t WINDOW_HEIGHT = TRS80_HEIGHT * WINDOW_SCALE;  // 576
 constexpr uint16_t CHAR_GEN_CHARS = 128;
 constexpr uint16_t CHAR_GEN_BYTES_PER_CHAR = 8;
 
-// Colors (TRS-80 is monochrome - green/amber on black)
-constexpr uint32_t COLOR_BLACK = 0x000000FF;
-constexpr uint32_t COLOR_GREEN = 0x00FF00FF;   // RGBA
-constexpr uint32_t COLOR_AMBER = 0xFFBF00FF;   // Alternative
+// Colors — ARGB8888 format: uint32_t = 0xAARRGGBB
+// On little-endian ARM64 this is stored in memory as B,G,R,A = MTLPixelFormatBGRA8Unorm (no SDL conversion)
+constexpr uint32_t COLOR_BLACK = 0xFF000000;   // A=255 R=0   G=0   B=0
+constexpr uint32_t COLOR_GREEN = 0xFF00FF00;   // A=255 R=0   G=255 B=0
+constexpr uint32_t COLOR_AMBER = 0xFFFFBF00;   // A=255 R=255 G=191 B=0
 
 class Display {
 public:

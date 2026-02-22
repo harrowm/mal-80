@@ -2,12 +2,15 @@
 
 CXX = clang++
 CXXSTD = -std=c++20
-OPT = -O0 -g
+OPT = -O3 -flto
 WARN = -Wall -Wextra
 
 SRC_DIR = src
 BUILD_DIR = build
 TARGET = mal-80
+PGO_DIR = pgo_data
+PGO_PROFRAW = $(PGO_DIR)/default.profraw
+PGO_PROFDATA = $(PGO_DIR)/default.profdata
 
 SDL_CFLAGS = $(shell sdl2-config --cflags)
 SDL_LIBS = $(shell sdl2-config --libs)
@@ -16,7 +19,8 @@ SOURCES = $(shell find $(SRC_DIR) -name '*.cpp')
 OBJECTS = $(SOURCES:$(SRC_DIR)/%.cpp=$(BUILD_DIR)/%.o)
 
 CXXFLAGS = $(CXXSTD) $(OPT) $(WARN) $(SDL_CFLAGS) -arch arm64
-LDFLAGS = $(SDL_LIBS) -arch arm64
+# OPT must appear in LDFLAGS too — LTO and PGO flags are needed at link time
+LDFLAGS = $(OPT) $(SDL_LIBS) -arch arm64
 
 all: $(BUILD_DIR) $(TARGET)
 
@@ -37,6 +41,30 @@ run: $(TARGET)
 
 clean:
 	rm -rf $(BUILD_DIR) $(TARGET) zexall_test
+
+# ============================================================================
+# PGO (Profile-Guided Optimisation)
+# Usage: make pgo
+#   [1] Builds an instrumented binary
+#   [2] Launches ./mal-80 --load scarfman to collect a profile
+#       — let the attract mode play for ~30s, then quit (Cmd-Q or close window)
+#   [3] Merges .profraw → .profdata
+#   [4] Rebuilds the final binary with -fprofile-instr-use
+# ============================================================================
+pgo:
+	@echo ">>> [1/4] Building instrumented binary..."
+	$(MAKE) clean
+	$(MAKE) OPT="-O3 -flto -fprofile-instr-generate"
+	@echo ">>> [2/4] Training — SCARFMAN will launch."
+	@echo "          Let the attract mode play for ~30 seconds, then quit."
+	@mkdir -p $(PGO_DIR)
+	LLVM_PROFILE_FILE="$(CURDIR)/$(PGO_PROFRAW)" ./$(TARGET) --load scarfman || true
+	@echo ">>> [3/4] Merging profile data..."
+	xcrun llvm-profdata merge -output=$(CURDIR)/$(PGO_PROFDATA) $(CURDIR)/$(PGO_PROFRAW)
+	@echo ">>> [4/4] Building PGO-optimised binary..."
+	$(MAKE) clean
+	$(MAKE) OPT="-O3 -flto -fprofile-instr-use=$(CURDIR)/$(PGO_PROFDATA)"
+	@echo ">>> Done! ./mal-80 is now PGO-optimised."
 
 # ============================================================================
 # ZEXALL Z80 Test Runner
@@ -82,4 +110,4 @@ zexall: $(TEST_TARGET) $(TEST_DIR)/zexall.com
 zexdoc: $(TEST_TARGET) $(TEST_DIR)/zexdoc.com
 	./$(TEST_TARGET) $(TEST_DIR)/zexdoc.com
 
-.PHONY: all clean run zexall zexdoc
+.PHONY: all clean run zexall zexdoc pgo
