@@ -104,6 +104,7 @@ private:
         bool iff1 = false, iff2 = false;
         uint8_t im = 0;
         bool halted = false;
+        bool ei_pending = false;  // EI delay: enable interrupts after the NEXT instruction
     } reg;
 
     Bus& bus;

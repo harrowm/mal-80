@@ -73,9 +73,9 @@ TEST_DIR = tests/zexall
 TEST_BUILD_DIR = $(BUILD_DIR)/tests/zexall
 TEST_TARGET = zexall_test
 
-# Test sources: test harness + Z80 CPU + Bus (no SDL, no Display)
-TEST_SOURCES = $(TEST_DIR)/main.cpp $(SRC_DIR)/cpu/z80.cpp $(SRC_DIR)/system/Bus.cpp
-TEST_OBJECTS = $(TEST_BUILD_DIR)/main.o $(TEST_BUILD_DIR)/z80.o $(TEST_BUILD_DIR)/Bus.o
+# Test sources: test harness + Z80 CPU + Bus + FDC (no SDL, no Display)
+TEST_SOURCES = $(TEST_DIR)/main.cpp $(SRC_DIR)/cpu/z80.cpp $(SRC_DIR)/system/Bus.cpp $(SRC_DIR)/fdc/FDC.cpp
+TEST_OBJECTS = $(TEST_BUILD_DIR)/main.o $(TEST_BUILD_DIR)/z80.o $(TEST_BUILD_DIR)/Bus.o $(TEST_BUILD_DIR)/FDC.o
 TEST_CXXFLAGS = $(CXXSTD) -O2 -g $(WARN) -arch arm64
 
 $(TEST_BUILD_DIR):
@@ -88,6 +88,9 @@ $(TEST_BUILD_DIR)/z80.o: $(SRC_DIR)/cpu/z80.cpp | $(TEST_BUILD_DIR)
 	$(CXX) $(TEST_CXXFLAGS) -c $< -o $@
 
 $(TEST_BUILD_DIR)/Bus.o: $(SRC_DIR)/system/Bus.cpp | $(TEST_BUILD_DIR)
+	$(CXX) $(TEST_CXXFLAGS) -c $< -o $@
+
+$(TEST_BUILD_DIR)/FDC.o: $(SRC_DIR)/fdc/FDC.cpp | $(TEST_BUILD_DIR)
 	$(CXX) $(TEST_CXXFLAGS) -c $< -o $@
 
 $(TEST_TARGET): $(TEST_OBJECTS)

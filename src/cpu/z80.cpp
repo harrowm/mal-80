@@ -23,6 +23,15 @@ void Z80::reset() {
 // MAIN EXECUTION STEP
 // ============================================================================
 int Z80::step() {
+    // EI delay: the instruction after EI executes before interrupts are enabled.
+    // Apply the pending IFF1 enable at the start of each instruction so that
+    // Emulator::deliver_interrupt() (called after this step) sees IFF1=true
+    // only from the instruction AFTER EI, not immediately on EI itself.
+    if (reg.ei_pending) {
+        reg.iff1 = reg.iff2 = true;
+        reg.ei_pending = false;
+    }
+
     t_states = 0;
     is_m1_cycle = true;
     
@@ -462,10 +471,13 @@ void Z80::op_halt() {
 
 void Z80::op_di() {
     reg.iff1 = reg.iff2 = false;
+    reg.ei_pending = false;  // cancel any pending EI
 }
 
 void Z80::op_ei() {
-    reg.iff1 = reg.iff2 = true;
+    // Do not enable IFF1 immediately — set a pending flag so the NEXT
+    // instruction executes before interrupts are accepted (Z80 EI delay).
+    reg.ei_pending = true;
 }
 
 void Z80::op_nop() {
@@ -1426,16 +1438,11 @@ void Z80::init_ed_table() {
 // DD/FD PREFIX TABLES (IX/IY Index Registers)
 // ============================================================================
 void Z80::init_dd_table() {
-    // Default: treat as NOP (but log if still hitting unknowns)
+    // Default: DD + non-IX opcode → execute the un-prefixed version.
+    // On real Z80, an unrecognised DD sub-opcode is silently treated as if
+    // the DD prefix byte were a NOP; the following byte is executed normally.
     for (int i = 0; i < 256; i++) {
-        dd_table[i] = [this, i]() {
-            static int warn_count = 0;
-            if (warn_count < 50) {
-                fprintf(stderr, "UNIMPL DD 0x%02X at PC=0x%04X\n", i, (unsigned)(reg.pc - 1));
-                warn_count++;
-            }
-            add_ticks(4);
-        };
+        dd_table[i] = [this, i]() { main_table[i](); };
     }
 
     // LD IX, nn
@@ -1677,16 +1684,10 @@ void Z80::init_dd_table() {
 }
 
 void Z80::init_fd_table() {
-    // Default: log unimplemented
+    // Default: FD + non-IY opcode → execute the un-prefixed version.
+    // Same undocumented fallthrough behaviour as DD above.
     for (int i = 0; i < 256; i++) {
-        fd_table[i] = [this, i]() {
-            static int warn_count = 0;
-            if (warn_count < 50) {
-                fprintf(stderr, "UNIMPL FD 0x%02X at PC=0x%04X\n", i, (unsigned)(reg.pc - 1));
-                warn_count++;
-            }
-            add_ticks(4);
-        };
+        fd_table[i] = [this, i]() { main_table[i](); };
     }
 
     // LD IY, nn

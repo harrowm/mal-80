@@ -23,10 +23,13 @@ void Bus::reset() {
     rom.fill(0x00);
     vram.fill(0x20);  // Fill VRAM with spaces (0x20)
     ram.fill(0x00);
+    rom_shadow_.fill(0x00);
+    rom_shadow_active_.fill(false);
     global_t_states = 0;
     current_scanline = 0;
     t_states_in_scanline = 0;
     int_pending = false;
+    int_for_latch = false;
     iff_enabled = true;
     cas_state = CassetteState::IDLE;
     cas_data.clear();
@@ -71,8 +74,8 @@ uint8_t Bus::read(uint16_t addr, bool is_m1) {
     uint8_t value = 0x00;
 
     if (addr <= ROM_END) {
-        // ROM Access (0x0000 - 0x2FFF)
-        value = rom[addr];
+        // ROM access — prefer shadow RAM if LDOS has written here
+        value = rom_shadow_active_[addr] ? rom_shadow_[addr] : rom[addr];
     } else if (addr >= KEYBOARD_START && addr <= KEYBOARD_END) {
         // Keyboard (memory-mapped at 0x3800-0x3BFF)
         // Address bits 0-7 select which row(s) to scan
@@ -94,8 +97,35 @@ uint8_t Bus::read(uint16_t addr, bool is_m1) {
     } else if (addr >= RAM_START && addr <= RAM_END) {
         // User RAM (0x4000 - 0xFFFF)
         value = ram[addr - RAM_START];
+    } else if (addr >= 0x37E0 && addr <= 0x37EF) {
+        // Disk controller registers (expansion interface, memory-mapped)
+        if (addr <= 0x37E3) {
+            // IRQ status register: bit7=60Hz timer tick, bit6=FDC INTRQ.
+            // int_for_latch is set with int_pending but is NOT auto-cleared on
+            // interrupt delivery — it persists until software reads this register.
+            // LDOS's ISR reads 0x37E0 to determine which source fired (timer vs FDC).
+            value = (int_for_latch ? 0x80 : 0x00) | (fdc_.intrq_pending() ? 0x40 : 0x00);
+            int_pending   = false;   // also clear delivery flag
+            int_for_latch = false;   // reading 0x37E0 clears the timer latch
+        } else if (addr <= 0x37E7) {
+            // 0x37E4-0x37E7: cassette select / misc control — open bus
+            value = 0xFF;
+        } else if (addr <= 0x37EB) {
+            // 0x37E8-0x37EB: Centronics parallel printer port status register.
+            // Bits 7-4 when no printer connected (Centronics lines at idle/open):
+            //   bit7=0 (/BUSY=low, printer not busy)
+            //   bit6=0 (PE=low, no paper-end)
+            //   bit5=1 (SELECT pulled high)
+            //   bit4=1 (/ERROR pulled high → logic 1 = no fault)
+            // = 0x30 upper nibble.  The Level II ROM disk/printer routine at 0x05D1
+            // polls this in a loop until (status & 0xF0) == 0x30 before sending
+            // a character to the printer.  Returning 0x30 means "ready / no printer."
+            value = 0x30;
+        } else {
+            value = fdc_.read(addr);   // 0x37EC-0x37EF: FDC registers
+        }
     } else {
-        // Unmapped memory (0x3000-0x37FF)
+        // Unmapped memory (0x3000-0x37DF)
         value = 0xFF;
     }
 
@@ -117,7 +147,23 @@ void Bus::write(uint16_t addr, uint8_t val) {
         return;
     }
 
-    if (addr >= VRAM_START && addr <= VRAM_END) {
+    if (addr <= ROM_END) {
+        // ROM-range write: shadow with RAM (expansion interface RAM-over-ROM).
+        // LDOS installs its interrupt handler at 0x0038 this way.
+        // Log writes to the first page (ISR / RST vectors / keyboard-handler area)
+        // and flag 0x30 writes anywhere (0x30 = ASCII '0', the phantom-key suspect).
+        if (val == 0x30) {
+            fprintf(stderr, "[ROM-SHADOW] 0x%04X = 0x30 ('0') — possible phantom-key source\n", addr);
+        } else if (addr < 0x0100) {
+            fprintf(stderr, "[ROM-SHADOW] 0x%04X = 0x%02X\n", addr, val);
+        }
+        rom_shadow_[addr]        = val;
+        rom_shadow_active_[addr] = true;
+        return;
+    } else if (addr >= 0x37E0 && addr <= 0x37EF) {
+        // Disk controller registers (expansion interface)
+        fdc_.write(addr, val);
+    } else if (addr >= VRAM_START && addr <= VRAM_END) {
         // Video RAM writes (0x3C00-0x3FFF)
         vram[addr - VRAM_START] = val;
     } else if (addr >= RAM_START && addr <= RAM_END) {
@@ -125,6 +171,10 @@ void Bus::write(uint16_t addr, uint8_t val) {
         ram[addr - RAM_START] = val;
     }
     // ROM and keyboard are read-only, writes ignored
+}
+
+bool Bus::load_disk(int drive, const std::string& path) {
+    return fdc_.load_disk(drive, path);
 }
 
 // ============================================================================
@@ -151,7 +201,8 @@ void Bus::update_video_timing(int t_states) {
             current_scanline = 0;
             // Trigger V-Blank interrupt at end of frame
             if (iff_enabled) {
-                int_pending = true;
+                int_pending   = true;
+                int_for_latch = true;   // Disk-expansion latch: visible via 0x37E0 bit 7
             }
         }
     }
@@ -237,7 +288,8 @@ void Bus::write_port(uint8_t port, uint8_t val) {
 // ============================================================================
 uint8_t Bus::peek(uint16_t addr) const {
     if (flat_mode) return flat_mem[addr];
-    if (addr <= ROM_END) return rom[addr];
+    if (addr <= ROM_END)
+        return rom_shadow_active_[addr] ? rom_shadow_[addr] : rom[addr];
     if (addr >= KEYBOARD_START && addr <= KEYBOARD_END) return 0x00;
     if (addr >= VRAM_START && addr <= VRAM_END) return vram[addr - VRAM_START];
     if (addr >= RAM_START) return ram[addr - RAM_START];
@@ -515,6 +567,7 @@ bool Bus::is_playback_done() const {
 // ============================================================================
 void Bus::trigger_interrupt() {
     if (iff_enabled) {
-        int_pending = true;
+        int_pending   = true;
+        int_for_latch = true;
     }
 }

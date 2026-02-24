@@ -20,9 +20,12 @@ bool Emulator::init(int argc, char* argv[]) {
 
     // Parse CLI arguments
     std::string cli_load_name;
+    std::string cli_disk_path;
     for (int i = 1; i < argc; i++) {
         if (std::strcmp(argv[i], "--load") == 0 && i + 1 < argc)
             cli_load_name = argv[++i];
+        else if (std::strcmp(argv[i], "--disk") == 0 && i + 1 < argc)
+            cli_disk_path = argv[++i];
     }
 
     if (!display_.init("Mal-80 - TRS-80 Emulator")) {
@@ -42,6 +45,11 @@ bool Emulator::init(int argc, char* argv[]) {
     cpu_.reset();
     bus_.set_keyboard_matrix(keyboard_matrix_);
     frame_start_ = std::chrono::steady_clock::now();
+
+    if (!cli_disk_path.empty()) {
+        if (!bus_.load_disk(0, cli_disk_path))
+            std::cerr << "Warning: failed to load disk image: " << cli_disk_path << "\n";
+    }
 
     if (!cli_load_name.empty())
         loader_.setup_from_cli(cli_load_name, injector_);
@@ -96,8 +104,29 @@ void Emulator::run() {
 
 void Emulator::step_frame(uint64_t t_budget) {
     uint64_t frame_ts = 0;
+    static uint16_t prev_pc = 0;
+    static bool been_in_ram = false;   // armed once LDOS is running in RAM
     while (frame_ts < t_budget) {
         uint16_t pc = cpu_.get_pc();
+        if (pc >= 0x4000) been_in_ram = true;
+        if (been_in_ram && pc < 0x0100 && prev_pc >= 0x0100) {
+            // Skip 0x004C (@DSPLY) — high-frequency display calls are noise
+            if (pc != 0x004C) {
+                fprintf(stderr, "[TRAP] jumped 0x%04X → 0x%04X  SP=0x%04X  A=0x%02X\n",
+                        prev_pc, pc, cpu_.get_sp(), cpu_.get_a());
+            }
+        }
+        // Log when ROM routines return to >256 address with a non-zero A.
+        // Catches keyboard scan routine (0x004C/$KEY) returning a key code.
+        if (been_in_ram && prev_pc < 0x0100 && pc >= 0x0100) {
+            uint8_t a = cpu_.get_a();
+            if (a != 0) {
+                fprintf(stderr, "[TRAP-RET] 0x%04X → 0x%04X  A=0x%02X ('%c')\n",
+                        prev_pc, pc, a,
+                        (a >= 0x20 && a < 0x7F) ? (char)a : '?');
+            }
+        }
+        prev_pc = pc;
 
         loader_.on_system_entry(pc, cpu_, bus_);
         loader_.on_cload_entry(pc, cpu_, bus_, injector_);

@@ -35,11 +35,11 @@ void Display::init_char_generator() {
 
 uint8_t Display::get_char_pattern(uint8_t char_code, uint8_t row) const {
     if (row >= 8) return 0x00;
-    // TRS-80 MCM6670P character ROM uses 6-bit addressing (64 chars):
-    //   0x00-0x1F → @, A-Z, special  (maps to ASCII 0x40-0x5F in our table)
-    //   0x20-0x3F → space, digits, punctuation (same as ASCII)
-    // VRAM bit 6 is ignored by character ROM hardware; bit 7 selects semigraphics
-    uint8_t rom_addr = char_code & 0x3F;
+    // 7-bit character lookup. Bit 7 selects semigraphics (handled in draw_character).
+    // Chars 0x60-0x7F (lowercase ASCII) are mapped to the same patterns as 0x40-0x5F
+    // in CharRom.hpp, so LDOS lowercase output renders as the corresponding uppercase
+    // letter (equivalent to the common TRS-80 lowercase hardware mod).
+    uint8_t rom_addr = char_code & 0x7F;
     uint8_t ascii_idx = (rom_addr < 0x20) ? (rom_addr + 0x40) : rom_addr;
     return char_generator[ascii_idx * 8 + row];
 }
@@ -288,6 +288,8 @@ bool Display::handle_events(uint8_t* keyboard_matrix) {
                 auto it = active_keys.find((int)sc);
                 if (it != active_keys.end()) {
                     auto& m = it->second;
+                    if (m.row == 4 && m.col == 0)
+                        fprintf(stderr, "[KBD] '0' key UP (matrix[4] bit 0 cleared)\n");
                     keyboard_matrix[m.row] &= ~(1 << m.col);
                     if (m.shift_override != 0) {
                         synthetic_shift_count--;
@@ -412,6 +414,8 @@ bool Display::handle_events(uint8_t* keyboard_matrix) {
             if (row < 8) {
                 // Store mapping so key-up can undo it exactly
                 active_keys[(int)sc] = {row, col, shift_override};
+                if (row == 4 && col == 0)
+                    fprintf(stderr, "[KBD] '0' key DOWN (matrix[4] bit 0 set)\n");
                 keyboard_matrix[row] |= (1 << col);
                 if (shift_override == 1) {
                     synthetic_shift_count++;

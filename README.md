@@ -7,17 +7,17 @@ A TRS-80 Model I emulator with accurate Z80 emulation, cassette loading, and ins
 ---
 
 ![SCARFMAN running in Mal-80](docs/scarfman.png)
-*SCARFMAN (1981) running in Mal-80 — green phosphor, just like the original*
+*SCARFMAN (1981) running in Mal-80*
 
 ---
 
 ## Features
 
 - **Z80 CPU** — passes all 67 ZEXALL tests
-- **Instant software loading** — SYSTEM (.cas) and BASIC (.bas/.cas) files load in milliseconds via ROM intercepts, no FSK emulation wait
+- **Instant software loading** — SYSTEM (.cas) and BASIC (.bas/.cas) files load very quickly via ROM intercepts, no FSK (frequency shift key - ie cassette tape noise) emulation wait
 - **Turbo mode** — 100× speed during BASIC injection, automatic throttle back to 60 Hz for gameplay
 - **1-bit audio** — port 0xFF square-wave output with IIR low-pass + DC-blocking filter via SDL audio
-- **CLOAD / CSAVE** — full FSK cassette emulation for normal tape workflows
+- **CLOAD / CSAVE** — full FSK cassette emulation for normal tape workflows and user boredom, sorry reminicing
 - **`--load <name>`** — auto-load any software file from the command line
 - **Freeze detector** — circular trace buffer auto-dumps `trace.log` if the emulator loops
 
@@ -122,7 +122,7 @@ If both `.bas` and `.cas` exist for the same name, `.bas` takes priority.
 ## ROM
 
 You must supply your own `roms/level2.rom` (12,288 bytes). TRS-80 ROMs are
-copyrighted — only use a dump from hardware you own.
+copyrighted.
 
 ---
 

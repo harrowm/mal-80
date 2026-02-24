@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <string>
 #include <vector>
+#include "../fdc/FDC.hpp"
 
 // ============================================================================
 // TRS-80 MODEL I MEMORY MAP
@@ -62,8 +63,8 @@ public:
     void reset();
     void load_rom(const std::string& path, uint16_t offset = ROM_START);
     void trigger_interrupt();
-    bool interrupt_pending() const { return int_pending; }
-    void clear_interrupt() { int_pending = false; }
+    bool interrupt_pending() const { return int_pending || fdc_.intrq_pending(); }
+    void clear_interrupt() { int_pending = false; }  // clears timer; FDC INTRQ clears on status read
 
     // Video Interface (called from Display)
     uint64_t get_global_t_states() const { return global_t_states; }
@@ -78,6 +79,10 @@ public:
     // Bit 1 of port 0xFF is the cassette data output line.
     // Games toggle this at audio frequencies to produce sound.
     bool get_sound_bit() const { return (cas_prev_port_val & 0x02) != 0; }
+
+    // Disk Interface
+    bool load_disk(int drive, const std::string& path);
+    bool fdc_present() const { return fdc_.is_present(); }
 
     // Cassette File Operations
     bool load_cas_file(const std::string& path);
@@ -126,7 +131,8 @@ private:
     uint64_t global_t_states = 0;       // Total T-states since reset
     uint16_t current_scanline = 0;      // Current video scanline (0-261)
     uint16_t t_states_in_scanline = 0;  // T-states within current scanline
-    bool int_pending = false;           // Interrupt pending flag
+    bool int_pending = false;           // Interrupt pending flag (cleared on delivery)
+    bool int_for_latch = false;         // Disk-expansion latch bit (cleared by reading 0x37E0)
     bool iff_enabled = true;            // Interrupts enabled (simplified)
 
     // =========================================================================
@@ -165,6 +171,21 @@ private:
     bool should_insert_wait_state(uint16_t addr, bool is_m1) const;
     void update_video_timing(int t_states);
     void check_video_contention();
+
+    // =========================================================================
+    // ROM SHADOW RAM (expansion interface RAM-over-ROM)
+    // =========================================================================
+    // On real hardware the expansion interface can remap the first 4KB of RAM
+    // over the ROM, allowing LDOS to install its interrupt handler at 0x0038.
+    // We implement this as a simple write-through shadow: any write to the ROM
+    // area (0x0000-0x2FFF) is stored here, and reads prefer it over ROM.
+    std::array<uint8_t, ROM_SIZE> rom_shadow_{};
+    std::array<bool, ROM_SIZE>    rom_shadow_active_{};
+
+    // =========================================================================
+    // DISK CONTROLLER
+    // =========================================================================
+    FDC fdc_;
 
     // =========================================================================
     // FLAT MEMORY MODE (for CP/M test programs like ZEXALL)
