@@ -115,6 +115,57 @@ void Emulator::step_frame(uint64_t t_budget) {
                 fprintf(stderr, "[TRAP] jumped 0x%04X → 0x%04X  SP=0x%04X  A=0x%02X\n",
                         prev_pc, pc, cpu_.get_sp(), cpu_.get_a());
             }
+            // One-shot: dump ROM shadow at $KEY on first call to see what LDOS installed
+            if (pc == 0x0049) {
+                static bool dumped_key_shadow = false;
+                if (!dumped_key_shadow) {
+                    dumped_key_shadow = true;
+                    fprintf(stderr, "[KEY-SHADOW] bytes 0x0049-0x0060:");
+                    for (uint16_t i = 0x0049; i <= 0x0060; i++)
+                        fprintf(stderr, " %02X", bus_.peek(i));
+                    fprintf(stderr, "\n");
+                }
+            }
+            if (pc == 0x002B) {
+                static bool dumped_kbd_shadow = false;
+                if (!dumped_kbd_shadow) {
+                    dumped_kbd_shadow = true;
+                    fprintf(stderr, "[KBD-SHADOW] bytes 0x002B-0x0048:");
+                    for (uint16_t i = 0x002B; i <= 0x0048; i++)
+                        fprintf(stderr, " %02X", bus_.peek(i));
+                    fprintf(stderr, "\n");
+                    // Dump the common buffer-read dispatch at 0x0013-0x002A
+                    fprintf(stderr, "[DISPATCH]   bytes 0x0013-0x002A:");
+                    for (uint16_t i = 0x0013; i <= 0x002A; i++)
+                        fprintf(stderr, " %02X", bus_.peek(i));
+                    fprintf(stderr, "\n");
+                    // Dump LDOS keyboard workspace: buffer head/tail/data
+                    fprintf(stderr, "[KBD-WORK]   bytes 0x4010-0x4040:");
+                    for (uint16_t i = 0x4010; i <= 0x4040; i++)
+                        fprintf(stderr, " %02X", bus_.peek(i));
+                    fprintf(stderr, "\n");
+                    // Dump keyboard ring buffer (DCB+1:+2 = 0x03E3, within ROM shadow)
+                    fprintf(stderr, "[KBD-RINGBUF] bytes 0x03DF-0x03F0:");
+                    for (uint16_t i = 0x03DF; i <= 0x03F0; i++)
+                        fprintf(stderr, " %02X", bus_.peek(i));
+                    fprintf(stderr, "\n");
+                    // Dump start of actual LDOS ISR at 0x4518
+                    fprintf(stderr, "[ISR-CODE]   bytes 0x4515-0x4570:");
+                    for (uint16_t i = 0x4515; i <= 0x4570; i++)
+                        fprintf(stderr, " %02X", bus_.peek(i));
+                    fprintf(stderr, "\n");
+                    // Dump keyboard scanner at 0x4DA6 (called from ISR every timer tick)
+                    fprintf(stderr, "[KBD-SCAN]   bytes 0x4DA0-0x4E20:");
+                    for (uint16_t i = 0x4DA0; i <= 0x4E20; i++)
+                        fprintf(stderr, " %02X", bus_.peek(i));
+                    fprintf(stderr, "\n");
+                    // Extend workspace to see timer-handler dispatch table (timer handler at 0x405B)
+                    fprintf(stderr, "[KBD-WORK2]  bytes 0x4041-0x4070:");
+                    for (uint16_t i = 0x4041; i <= 0x4070; i++)
+                        fprintf(stderr, " %02X", bus_.peek(i));
+                    fprintf(stderr, "\n");
+                }
+            }
         }
         // Log when ROM routines return to >256 address with a non-zero A.
         // Catches keyboard scan routine (0x004C/$KEY) returning a key code.

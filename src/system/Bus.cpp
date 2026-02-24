@@ -87,7 +87,10 @@ uint8_t Bus::read(uint16_t addr, bool is_m1) {
                     value |= keyboard_matrix[row];
                 }
             }
-
+            if (value != 0) {
+                fprintf(stderr, "[KBD-HIT] addr=0x%04X row_sel=0x%02X val=0x%02X\n",
+                        addr, row_select, value);
+            }
         } else {
             value = 0x00;  // No keyboard connected
         }
