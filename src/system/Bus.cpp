@@ -87,10 +87,6 @@ uint8_t Bus::read(uint16_t addr, bool is_m1) {
                     value |= keyboard_matrix[row];
                 }
             }
-            if (value != 0) {
-                fprintf(stderr, "[KBD-HIT] addr=0x%04X row_sel=0x%02X val=0x%02X\n",
-                        addr, row_select, value);
-            }
         } else {
             value = 0x00;  // No keyboard connected
         }
@@ -153,13 +149,6 @@ void Bus::write(uint16_t addr, uint8_t val) {
     if (addr <= ROM_END) {
         // ROM-range write: shadow with RAM (expansion interface RAM-over-ROM).
         // LDOS installs its interrupt handler at 0x0038 this way.
-        // Log writes to the first page (ISR / RST vectors / keyboard-handler area)
-        // and flag 0x30 writes anywhere (0x30 = ASCII '0', the phantom-key suspect).
-        if (val == 0x30) {
-            fprintf(stderr, "[ROM-SHADOW] 0x%04X = 0x30 ('0') — possible phantom-key source\n", addr);
-        } else if (addr < 0x0100) {
-            fprintf(stderr, "[ROM-SHADOW] 0x%04X = 0x%02X\n", addr, val);
-        }
         rom_shadow_[addr]        = val;
         rom_shadow_active_[addr] = true;
         return;

@@ -45,6 +45,7 @@ public:
     bool     get_iff2()    const { return reg.iff2;   }
     uint8_t  get_im()      const { return reg.im;     }
     bool     get_halted()  const { return reg.halted; }
+    bool     has_prefix_pending() const { return prefix != 0x00; }
 
     // Debug mutation (for test harnesses and ROM intercepts)
     void set_pc(uint16_t val)     { reg.pc     = val; }

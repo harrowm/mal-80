@@ -197,4 +197,5 @@ public:
     // Direct access to flat memory (for loading .COM files)
     uint8_t* get_flat_memory() { return flat_mem.data(); }
     bool is_flat_mode() const { return flat_mode; }
+
 };

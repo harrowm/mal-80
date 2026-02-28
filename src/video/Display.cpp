@@ -288,8 +288,6 @@ bool Display::handle_events(uint8_t* keyboard_matrix) {
                 auto it = active_keys.find((int)sc);
                 if (it != active_keys.end()) {
                     auto& m = it->second;
-                    if (m.row == 4 && m.col == 0)
-                        fprintf(stderr, "[KBD] '0' key UP (matrix[4] bit 0 cleared)\n");
                     keyboard_matrix[m.row] &= ~(1 << m.col);
                     if (m.shift_override != 0) {
                         synthetic_shift_count--;
@@ -414,8 +412,6 @@ bool Display::handle_events(uint8_t* keyboard_matrix) {
             if (row < 8) {
                 // Store mapping so key-up can undo it exactly
                 active_keys[(int)sc] = {row, col, shift_override};
-                if (row == 4 && col == 0)
-                    fprintf(stderr, "[KBD] '0' key DOWN (matrix[4] bit 0 set)\n");
                 keyboard_matrix[row] |= (1 << col);
                 if (shift_override == 1) {
                     synthetic_shift_count++;
