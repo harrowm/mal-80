@@ -429,13 +429,21 @@ void Z80::op_sr(uint8_t& val) {
 // ============================================================================
 void Z80::op_call() {
     uint16_t addr = fetch16();
+    if (addr >= 0xFE00) {
+        fprintf(stderr, "[HIGHCALL] CALL 0x%04X from PC=0x%04X\n", addr, reg.pc);
+    }
     push(reg.pc);
     reg.pc = addr;
     add_ticks(17);
 }
 
 void Z80::op_ret() {
-    reg.pc = pop();
+    uint16_t ret_addr = pop();
+    if (ret_addr >= 0xF000) {
+        fprintf(stderr, "[BADRET] RET to 0x%04X from PC=0x%04X SP(before)=0x%04X\n",
+                ret_addr, reg.pc, reg.sp - 2);
+    }
+    reg.pc = ret_addr;
     add_ticks(10);
 }
 
@@ -446,7 +454,11 @@ void Z80::op_reti() {
 }
 
 void Z80::op_jp() {
-    reg.pc = fetch16();
+    uint16_t addr = fetch16();
+    if (addr >= 0xFE00) {
+        fprintf(stderr, "[HIGHJP] JP 0x%04X from PC=0x%04X\n", addr, reg.pc);
+    }
+    reg.pc = addr;
     add_ticks(10);
 }
 
@@ -845,7 +857,11 @@ void Z80::init_main_table() {
     main_table[0x30] = [this]() { int8_t offset = static_cast<int8_t>(fetch(false)); if (!get_flag(FLAG_C)) { reg.pc += offset; add_ticks(12); } else { add_ticks(7); } };
     main_table[0x38] = [this]() { int8_t offset = static_cast<int8_t>(fetch(false)); if (get_flag(FLAG_C)) { reg.pc += offset; add_ticks(12); } else { add_ticks(7); } };
     
-    main_table[0xE9] = [this]() { reg.pc = reg.hl; add_ticks(4); };  // JP (HL)
+    main_table[0xE9] = [this]() {
+        if (reg.hl >= 0xFE00)
+            fprintf(stderr, "[BADJP] JP (HL)=0x%04X from PC=0x%04X\n", reg.hl, reg.pc);
+        reg.pc = reg.hl; add_ticks(4);
+    };  // JP (HL)
     
     // --- Call/Return Group ---
     main_table[0xCD] = [this]() { op_call(); };
@@ -1220,6 +1236,11 @@ void Z80::init_ed_table() {
 
     // ---- LDIR (ED B0) ----
     ed_table[0xB0] = [this]() {
+        static uint16_t last_ldir_pc = 0xFFFF;
+        if (reg.pc != last_ldir_pc) {
+            last_ldir_pc = reg.pc;
+            fprintf(stderr, "[LDIR] HL=0x%04X DE=0x%04X BC=0x%04X\n", reg.hl, reg.de, reg.bc);
+        }
         uint8_t val = read_mem(reg.hl);
         write_mem(reg.de, val);
         reg.hl++; reg.de++; reg.bc--;
@@ -1251,6 +1272,11 @@ void Z80::init_ed_table() {
 
     // ---- LDDR (ED B8) ----
     ed_table[0xB8] = [this]() {
+        static uint16_t last_lddr_pc = 0xFFFF;
+        if (reg.pc != last_lddr_pc) {
+            last_lddr_pc = reg.pc;
+            fprintf(stderr, "[LDDR] HL=0x%04X DE=0x%04X BC=0x%04X\n", reg.hl, reg.de, reg.bc);
+        }
         uint8_t val = read_mem(reg.hl);
         write_mem(reg.de, val);
         reg.hl--; reg.de--; reg.bc--;
@@ -1505,7 +1531,11 @@ void Z80::init_dd_table() {
     dd_table[0xE3] = [this]() { uint16_t v = reg.ix; reg.ix = read_mem(reg.sp) | (read_mem(reg.sp+1) << 8); write_mem(reg.sp, v & 0xFF); write_mem(reg.sp+1, v >> 8); add_ticks(19); };
 
     // JP (IX)
-    dd_table[0xE9] = [this]() { reg.pc = reg.ix; add_ticks(4); };
+    dd_table[0xE9] = [this]() {
+        if (reg.ix >= 0xFE00)
+            fprintf(stderr, "[BADJP] JP (IX)=0x%04X from PC=0x%04X\n", reg.ix, reg.pc);
+        reg.pc = reg.ix; add_ticks(4);
+    };
 
     // LD SP, IX
     dd_table[0xF9] = [this]() { reg.sp = reg.ix; add_ticks(6); };
@@ -1750,7 +1780,11 @@ void Z80::init_fd_table() {
     fd_table[0xE3] = [this]() { uint16_t v = reg.iy; reg.iy = read_mem(reg.sp) | (read_mem(reg.sp+1) << 8); write_mem(reg.sp, v & 0xFF); write_mem(reg.sp+1, v >> 8); add_ticks(19); };
 
     // JP (IY)
-    fd_table[0xE9] = [this]() { reg.pc = reg.iy; add_ticks(4); };
+    fd_table[0xE9] = [this]() {
+        if (reg.iy >= 0xFE00)
+            fprintf(stderr, "[BADJP] JP (IY)=0x%04X from PC=0x%04X\n", reg.iy, reg.pc);
+        reg.pc = reg.iy; add_ticks(4);
+    };
 
     // LD SP, IY
     fd_table[0xF9] = [this]() { reg.sp = reg.iy; add_ticks(6); };

@@ -6,8 +6,15 @@
 #include <cstdio>
 
 void Debugger::record(Z80& cpu, uint64_t ticks) {
+    // Skip ROM-area chatter (keyboard scan ISR < 0x4000); crash path is RAM-only
+    if (cpu.get_pc() < 0x4000) return;
+    // Skip hot inner loops that flood the buffer without useful information:
+    //   0x4F18-0x4F1F: LDOS CRC-scan inner loop (BC=~0x0F2D iterations)
+    //   0x4527-0x452F: sector-bit-test inner loop
+    uint16_t pc = cpu.get_pc();
+    if ((pc >= 0x4F18 && pc <= 0x4F1F) || (pc >= 0x4527 && pc <= 0x452F)) return;
     TraceEntry& te = buf_[head_];
-    te.pc    = cpu.get_pc(); te.sp = cpu.get_sp();
+    te.pc    = pc; te.sp = cpu.get_sp();
     te.a     = cpu.get_a();  te.f  = cpu.get_f();
     te.b     = cpu.get_b();  te.c  = cpu.get_c();
     te.d     = cpu.get_d();  te.e  = cpu.get_e();
@@ -17,60 +24,20 @@ void Debugger::record(Z80& cpu, uint64_t ticks) {
     te.iff1  = cpu.get_iff1(); te.iff2 = cpu.get_iff2();
     te.halted = cpu.get_halted();
     te.ticks = ticks;
-    last_ticks_ = ticks;
     head_ = (head_ + 1) % BUF_SIZE;
     if (count_ < BUF_SIZE) count_++;
 }
 
-bool Debugger::check_freeze(uint16_t pc) {
-    if (dumped_) return false;
-
-    // Fast path: same PC repeated (single-address tight loop / HALT)
-    if (pc == last_pc_) {
-        streak_++;
-    } else {
-        last_pc_ = pc;
-        streak_  = 0;
-    }
-
-    // Slow path: all PCs in the rolling window fit within a 64-byte range
-    pc_window_[win_pos_] = pc;
-    win_pos_ = (win_pos_ + 1) % FREEZE_WINDOW;
-    if (!win_full_ && win_pos_ == 0) win_full_ = true;
-
-    // Only consider tight-loop freezes in RAM (>= 0x4000).
-    // The ROM's $KEY wait loop at 0x0049 is intentional; don't false-fire on it.
-    bool tight = (streak_ > 100'000) && (pc >= 0x4000);
-    if (!tight && win_full_) {
-        uint16_t lo = pc_window_[0], hi = pc_window_[0];
-        for (uint16_t p : pc_window_) {
-            if (p < lo) lo = p;
-            if (p > hi) hi = p;
-        }
-        if (lo >= 0x4000 && hi - lo < 64) {
-            ticks_acc_ += 4;
-        } else {
-            ticks_acc_ = 0;
-        }
-        tight = (ticks_acc_ >= FREEZE_TICKS);
-    }
-
-    if (tight) {
-        std::cerr << "[FREEZE] Detected at PC=0x" << std::hex << pc
-                  << std::dec << " streak=" << streak_
-                  << " ticks=" << last_ticks_ << "\n";
-        dumped_ = true;
-        return true;
-    }
-    return false;
+void Debugger::dump(const Bus& bus) {
+    dump_to(bus, "trace.log");
 }
 
-void Debugger::dump(const Bus& bus) {
+void Debugger::dump_to(const Bus& bus, const std::string& filename) {
     if (count_ == 0) return;
 
-    std::ofstream out("trace.log", std::ios::trunc);
+    std::ofstream out(filename, std::ios::trunc);
     if (!out.is_open()) {
-        std::cerr << "[TRACE] Could not open trace.log\n";
+        std::cerr << "[TRACE] Could not open " << filename << "\n";
         return;
     }
     out << "# Mal-80 freeze trace — last " << count_ << " instructions\n";
@@ -95,5 +62,5 @@ void Debugger::dump(const Bus& bus) {
         out << line;
     }
     out.close();
-    std::cerr << "[TRACE] Dumped " << count_ << " instructions to trace.log\n";
+    std::cerr << "[TRACE] Dumped " << count_ << " instructions to " << filename << "\n";
 }

@@ -20,13 +20,24 @@ bool Emulator::init(int argc, char* argv[]) {
 
     // Parse CLI arguments
     std::string cli_load_name;
-    std::string cli_disk_path;
+    std::string cli_disk_path[4];
     for (int i = 1; i < argc; i++) {
         if (std::strcmp(argv[i], "--load") == 0 && i + 1 < argc)
             cli_load_name = argv[++i];
         else if (std::strcmp(argv[i], "--disk") == 0 && i + 1 < argc)
-            cli_disk_path = argv[++i];
+            cli_disk_path[0] = argv[++i];  // --disk defaults to drive 0
+        else if (std::strcmp(argv[i], "--disk0") == 0 && i + 1 < argc)
+            cli_disk_path[0] = argv[++i];
+        else if (std::strcmp(argv[i], "--disk1") == 0 && i + 1 < argc)
+            cli_disk_path[1] = argv[++i];
+        else if (std::strcmp(argv[i], "--disk2") == 0 && i + 1 < argc)
+            cli_disk_path[2] = argv[++i];
+        else if (std::strcmp(argv[i], "--disk3") == 0 && i + 1 < argc)
+            cli_disk_path[3] = argv[++i];
+        else if (std::strcmp(argv[i], "--auto-ldos-date") == 0)
+            auto_ldos_date_ = true;
     }
+    fprintf(stderr, "[INIT] auto_ldos_date=%s\n", auto_ldos_date_ ? "YES" : "no");
 
     if (!display_.init("Mal-80 - TRS-80 Emulator")) {
         std::cerr << "Failed to initialize display\n";
@@ -46,9 +57,11 @@ bool Emulator::init(int argc, char* argv[]) {
     bus_.set_keyboard_matrix(keyboard_matrix_);
     frame_start_ = std::chrono::steady_clock::now();
 
-    if (!cli_disk_path.empty()) {
-        if (!bus_.load_disk(0, cli_disk_path))
-            std::cerr << "Warning: failed to load disk image: " << cli_disk_path << "\n";
+    for (int drive = 0; drive < 4; drive++) {
+        if (!cli_disk_path[drive].empty()) {
+            if (!bus_.load_disk(drive, cli_disk_path[drive]))
+                std::cerr << "Warning: failed to load disk" << drive << ": " << cli_disk_path[drive] << "\n";
+        }
     }
 
     if (!cli_load_name.empty())
@@ -91,6 +104,72 @@ void Emulator::run() {
         if (should_render)
             display_.render_frame(bus_);
 
+        // Per-frame VRAM scan: detect LDOS Date? prompt and auto-inject
+        // Also do ongoing VDUMP to track LDOS state
+        if (auto_ldos_date_) {
+            if (!ldos_date_injected_) {
+                static bool vram_scan_started = false;
+                if (!vram_scan_started) {
+                    vram_scan_started = true;
+                    fprintf(stderr, "[VDUMP] VRAM scan active\n");
+                }
+                bool found = false;
+                for (int row = 0; row < 16 && !found; row++) {
+                    for (int col = 0; col < 60 && !found; col++) {
+                        uint16_t off = (uint16_t)(row * 64 + col);
+                        auto r = [&](int o) -> uint8_t {
+                            return bus_.get_vram_byte((uint16_t)(off + o)); // raw, no masking
+                        };
+                        // LDOS 5.3.1 shows "Date ? _" = 44 61 74 65 20 3F
+                        // (D=0x44, a=0x61, t=0x74, e=0x65, space=0x20, ?=0x3F)
+                        if (r(0)==0x44 && r(1)==0x61 && r(2)==0x74 && r(3)==0x65 &&
+                            r(4)==0x20 && r(5)==0x3F) {
+                            found = true;
+                            fprintf(stderr, "[AUTO] 'Date ?' detected at VRAM row=%d col=%d, injecting date\n", row, col);
+                        }
+                    }
+                }
+                if (found) {
+                    ldos_date_injected_ = true;
+                    // Use \n for Enter (enqueue() maps \n→0x0D, strips \r)
+                    injector_.enqueue("01/01/84\n00:00:00\n");
+                }
+            }
+
+            // Every 60 frames (~1s) dump VRAM so we can see what's going on
+            static int vram_dbg_countdown = 1;
+            if (--vram_dbg_countdown <= 0) {
+                vram_dbg_countdown = 60;
+                // Find last non-empty row and dump it
+                for (int row = 15; row >= 0; row--) {
+                    bool has_content = false;
+                    for (int i = 0; i < 64; i++) {
+                        uint8_t b = bus_.get_vram_byte((uint16_t)(row * 64 + i));
+                        if (b != 0 && b != 0x20) { has_content = true; break; }
+                    }
+                    if (has_content) {
+                        fprintf(stderr, "[VDUMP] row%d hex: ", row);
+                        for (int i = 0; i < 64; i++) {
+                            uint8_t b = bus_.get_vram_byte((uint16_t)(row * 64 + i));
+                            if (b != 0 && b != 0x20)
+                                fprintf(stderr, "%02X ", b);
+                            else
+                                fprintf(stderr, ".. ");
+                        }
+                        fprintf(stderr, "\n");
+                        fprintf(stderr, "[VDUMP] row%d txt: \"", row);
+                        for (int i = 0; i < 64; i++) {
+                            uint8_t b = bus_.get_vram_byte((uint16_t)(row * 64 + i));
+                            uint8_t c = b & 0x7F;
+                            fprintf(stderr, "%c", (c >= 32 && c < 127) ? c : '.');
+                        }
+                        fprintf(stderr, "\"\n");
+                        break;
+                    }
+                }
+            }
+        }
+
         if (cur_speed_ == SpeedMode::NORMAL)
             pace_frame();
         frame_start_ = std::chrono::steady_clock::now();
@@ -107,6 +186,224 @@ void Emulator::step_frame(uint64_t t_budget) {
     while (frame_ts < t_budget) {
         uint16_t pc = cpu_.get_pc();
 
+        // Watchpoint: catch any jump to the ROM reset vector (LDOS crash to "Memory Size?")
+        if (pc <= 0x0003 && prev_pc_ > 0x0100) {
+            uint8_t svclo = bus_.read(0x50B6), svchi = bus_.read(0x50B7);
+            fprintf(stderr, "[CRASH] PC 0x%04X→0x%04X  SVC=0x%02X%02X (ptr=0x%04X)\n",
+                    prev_pc_, pc, svchi, svclo, (uint16_t)(svclo|(svchi<<8)));
+            // Dump LDOS memory variables area (0x4040-0x406F)
+            fprintf(stderr, "[CRASH] RAM 0x4040-0x407F:\n");
+            for (int a = 0x4040; a <= 0x407F; a += 16) {
+                fprintf(stderr, "[CRASH]   %04X:", a);
+                for (int i = 0; i < 16; i++) fprintf(stderr, " %02X", bus_.peek((uint16_t)(a+i)));
+                fprintf(stderr, "\n");
+            }
+            fprintf(stderr, "[CRASH] RAM 0x4080-0x40FF:\n");
+            for (int a = 0x4080; a <= 0x40FF; a += 16) {
+                fprintf(stderr, "[CRASH]   %04X:", a);
+                for (int i = 0; i < 16; i++) fprintf(stderr, " %02X", bus_.peek((uint16_t)(a+i)));
+                fprintf(stderr, "\n");
+            }
+            // Dump RAM around the corruption site (0x4CDB) and SVC region
+            fprintf(stderr, "[CRASH] RAM 0x4CC0-0x4CFF:\n");
+            for (int a = 0x4CC0; a <= 0x4CFF; a += 16) {
+                fprintf(stderr, "[CRASH]   %04X:", a);
+                for (int i = 0; i < 16; i++) fprintf(stderr, " %02X", bus_.peek((uint16_t)(a+i)));
+                fprintf(stderr, "  ");
+                for (int i = 0; i < 16; i++) { uint8_t b = bus_.peek((uint16_t)(a+i)) & 0x7F; fprintf(stderr, "%c", b>=32&&b<127?b:'.'); }
+                fprintf(stderr, "\n");
+            }
+            fprintf(stderr, "[CRASH] RAM 0x50A0-0x50CF:\n");
+            for (int a = 0x50A0; a <= 0x50CF; a += 16) {
+                fprintf(stderr, "[CRASH]   %04X:", a);
+                for (int i = 0; i < 16; i++) fprintf(stderr, " %02X", bus_.peek((uint16_t)(a+i)));
+                fprintf(stderr, "  ");
+                for (int i = 0; i < 16; i++) { uint8_t b = bus_.peek((uint16_t)(a+i)) & 0x7F; fprintf(stderr, "%c", b>=32&&b<127?b:'.'); }
+                fprintf(stderr, "\n");
+            }
+            debugger_.dump(bus_);
+        }
+        // Track when LDOS kernel first runs
+        if (!ldos_active_ && pc >= 0x4400 && pc < 0x6000) {
+            ldos_active_ = true;
+            fprintf(stderr, "[LDOS] kernel active at PC=0x%04X\n", pc);
+        }
+
+        // Log every transition from any address into high RAM (> 0x7FFF).
+        // Fires when prev_pc was NOT in high RAM and pc IS in high RAM.
+        if (pc > 0x7FFF && pc < 0xFFFF && prev_pc_ <= 0x7FFF) {
+            static int highcall_count = 0;
+            if (highcall_count < 10) {
+                highcall_count++;
+                uint16_t sp = cpu_.get_sp();
+                uint16_t ret_lo = bus_.peek(sp), ret_hi = bus_.peek((uint16_t)(sp+1));
+                uint16_t ret_addr = (uint16_t)(ret_lo | (ret_hi << 8));
+                fprintf(stderr, "[HIGHCALL#%d] 0x%04X→0x%04X  SP=0x%04X ret=0x%04X  AF=%02X%02X BC=%04X DE=%04X HL=%04X\n",
+                        highcall_count, prev_pc_, pc, sp, ret_addr,
+                        cpu_.get_a(), cpu_.get_f(), cpu_.get_bc(), cpu_.get_de(), cpu_.get_hl());
+                // Dump stack
+                fprintf(stderr, "[HIGHCALL#%d] stack[SP..SP+15]:", highcall_count);
+                for (int i = 0; i < 16; i++) fprintf(stderr, " %02X", bus_.peek((uint16_t)(sp+i)));
+                fprintf(stderr, "\n");
+                // Dump 48 bytes at the target address to see what code is there
+                fprintf(stderr, "[HIGHCALL#%d] RAM at 0x%04X..+47:\n", highcall_count, pc);
+                for (int row = 0; row < 48; row += 16) {
+                    uint16_t base = (uint16_t)(pc + row);
+                    fprintf(stderr, "[HIGHCALL#%d]   %04X:", highcall_count, base);
+                    for (int i = 0; i < 16; i++) fprintf(stderr, " %02X", bus_.peek((uint16_t)(base+i)));
+                    fprintf(stderr, "\n");
+                }
+            }
+        }
+
+        prev_pc_ = pc;
+        bus_.set_cpu_pc(pc);
+
+        // Dense per-instruction trace of the boot-loader decision range (0x4200-0x427F).
+        // Skip inner copy loops to avoid log flooding.
+        // Also log the JP(HL) at 0x4278 to capture the final dispatch target.
+        if (pc >= 0x4200 && pc <= 0x427F) {
+            // Skip the inner loops: PATCH data copy (56/59/5A/5B) and SKIP-N (62/66/69)
+            bool skip_inner = (pc == 0x4256 || pc == 0x4259 || pc == 0x425A || pc == 0x425B
+                             || pc == 0x4262 || pc == 0x4266 || pc == 0x4269);
+            static int boot_trace_count = 0;
+            if (!skip_inner && boot_trace_count < 200) {
+                ++boot_trace_count;
+                fprintf(stderr, "[BT#%04d] PC=%04X  AF=%02X%02X BC=%04X DE=%04X HL=%04X IX=%04X SP=%04X\n",
+                        boot_trace_count, pc,
+                        cpu_.get_a(), cpu_.get_f(),
+                        cpu_.get_bc(), cpu_.get_de(), cpu_.get_hl(),
+                        cpu_.get_ix(), cpu_.get_sp());
+            } else if (!skip_inner && boot_trace_count == 200) {
+                ++boot_trace_count;
+                fprintf(stderr, "[BT] trace limit reached (200 instructions in 0x4200-0x427F)\n");
+            }
+        }
+        // Always log the JP(HL) dispatch — this is the boot loader's final jump to LDOS entry
+        if (pc == 0x4278) {
+            uint16_t hl = cpu_.get_hl();
+            fprintf(stderr, "[JPHL] boot JP(HL)=0x%04X  AF=%02X%02X BC=%04X DE=%04X SP=%04X\n",
+                    hl, cpu_.get_a(), cpu_.get_f(),
+                    cpu_.get_bc(), cpu_.get_de(), cpu_.get_sp());
+            // First dispatch to SYS12: dump RAM at 0x4E00 so we can see what code is there
+            if (!sys12_dispatched_ && hl == 0x4E00) {
+                sys12_dispatched_ = true;
+                fprintf(stderr, "[SYS12] RAM 0x4E00..0x4EFF at first dispatch:\n");
+                for (int a = 0x4E00; a <= 0x4EFF; a += 16) {
+                    fprintf(stderr, "[SYS12]   %04X:", a);
+                    for (int i = 0; i < 16; i++) fprintf(stderr, " %02X", bus_.peek((uint16_t)(a+i)));
+                    fprintf(stderr, "\n");
+                }
+            }
+            // Second dispatch — HL=0x0000 means we're about to crash; dump context
+            if (sys12_dispatched_ && hl == 0x0000) {
+                fprintf(stderr, "[SYS12] FATAL: second dispatch HL=0x0000 — dumping 0x4200..0x42FF (T20/S8 content):\n");
+                for (int a = 0x4200; a <= 0x42FF; a += 16) {
+                    fprintf(stderr, "[SYS12]   %04X:", a);
+                    for (int i = 0; i < 16; i++) fprintf(stderr, " %02X", bus_.peek((uint16_t)(a+i)));
+                    fprintf(stderr, "\n");
+                }
+                uint16_t sp = cpu_.get_sp();
+                fprintf(stderr, "[SYS12] stack at SP=0x%04X:", sp);
+                for (int i = 0; i < 16; i++) fprintf(stderr, " %02X", bus_.peek((uint16_t)(sp+i)));
+                fprintf(stderr, "\n");
+            }
+        }
+        // After first dispatch to 0x4E00, trace all instructions in 0x4000-0x5FFF.
+        // Skip the FDC service routines in the boot-loader (0x42AC-0x42FF) to keep log manageable.
+        // Also skip the inner byte-copy loop at 0x46CB-0x46D4 (runs thousands of times per sector).
+        if (sys12_dispatched_ && pc >= 0x4000 && pc <= 0x5FFF) {
+            bool skip_fdc   = (pc >= 0x42AC && pc <= 0x42FF)
+                           || (pc >= 0x46CB && pc <= 0x46D4);  // inner byte-copy loop
+            bool skip_inner = (pc == 0x4256 || pc == 0x4259 || pc == 0x425A || pc == 0x425B
+                             || pc == 0x4262 || pc == 0x4266 || pc == 0x4269);
+            static int s12_count = 0;
+            if (!skip_fdc && !skip_inner) {
+                if (s12_count < 500) {
+                    ++s12_count;
+                    fprintf(stderr, "[S12#%05d] PC=%04X  AF=%02X%02X BC=%04X DE=%04X HL=%04X SP=%04X\n",
+                            s12_count, pc,
+                            cpu_.get_a(), cpu_.get_f(),
+                            cpu_.get_bc(), cpu_.get_de(), cpu_.get_hl(),
+                            cpu_.get_sp());
+                } else if (s12_count == 50000) {
+                    ++s12_count;
+                    fprintf(stderr, "[S12] trace limit reached (50000 instructions)\n");
+                }
+            }
+        }
+
+        // One-time dump of code at 0x4777 the moment PC first arrives there.
+        // This reveals what the second-stage loader code actually contains in RAM.
+        {
+            static bool at_4777_dumped = false;
+            if (sys12_dispatched_ && !at_4777_dumped && pc == 0x4777) {
+                at_4777_dumped = true;
+                fprintf(stderr, "[4777ENTRY] second-stage code — RAM dump 0x4600-0x4900:\n");
+                for (int a = 0x4600; a <= 0x4900; a += 16) {
+                    fprintf(stderr, "[4777ENTRY]   %04X:", a);
+                    for (int i = 0; i < 16; i++) fprintf(stderr, " %02X", bus_.peek((uint16_t)(a+i)));
+                    fprintf(stderr, "\n");
+                }
+            }
+        }
+
+        // One-time dump of 0x4040-0x40FF right when CALL 0x4777 returns (PC=0x4E8F).
+        // This tells us if the second-stage loader initialised the LDOS vector table.
+        {
+            static bool after_4777_dumped = false;
+            if (sys12_dispatched_ && !after_4777_dumped && pc == 0x4E8F) {
+                after_4777_dumped = true;
+                fprintf(stderr, "[4777RET] CALL 0x4777 returned — wide dump 0x4000-0x50FF:\n");
+                for (int a = 0x4000; a <= 0x50FF; a += 16) {
+                    fprintf(stderr, "[4777RET]   %04X:", a);
+                    for (int i = 0; i < 16; i++) fprintf(stderr, " %02X", bus_.peek((uint16_t)(a+i)));
+                    fprintf(stderr, "\n");
+                }
+            }
+        }
+
+        // Trace instructions in 0x4900-0x4FFF (LDOS init code around the BADRET site).
+        if (sys12_dispatched_ && pc >= 0x4900 && pc <= 0x4FFF) {
+            static int s49_count = 0;
+            if (s49_count < 500) {
+                ++s49_count;
+                fprintf(stderr, "[S49#%03d] PC=%04X  AF=%02X%02X BC=%04X DE=%04X HL=%04X SP=%04X\n",
+                        s49_count, pc,
+                        cpu_.get_a(), cpu_.get_f(),
+                        cpu_.get_bc(), cpu_.get_de(), cpu_.get_hl(),
+                        cpu_.get_sp());
+            }
+        }
+
+        // Trace instructions in high RAM (0xF000-0xFFFE) — intentionally brief.
+        if (pc >= 0xF000 && pc < 0xFFFF) {
+            static int hra_count = 0;
+            if (hra_count < 5) {
+                ++hra_count;
+                fprintf(stderr, "[HRA#%02d] PC=%04X  AF=%02X%02X BC=%04X DE=%04X HL=%04X SP=%04X\n",
+                        hra_count, pc,
+                        cpu_.get_a(), cpu_.get_f(),
+                        cpu_.get_bc(), cpu_.get_de(), cpu_.get_hl(),
+                        cpu_.get_sp());
+            } else if (hra_count == 5) {
+                ++hra_count;
+                fprintf(stderr, "[HRA] trace limit reached (5 instructions)\n");
+            }
+        }
+
+        // Track every distinct module-copy destination in the copy loop (0x4CDB).
+        if (pc == 0x4CDB) {
+            static uint16_t last_copy_hl = 0xFFFF;
+            uint16_t hl = cpu_.get_hl();
+            if (hl != last_copy_hl) {
+                last_copy_hl = hl;
+                const char* region = hl > 0x7FFF ? "HIGH" : "low ";
+                fprintf(stderr, "[COPY] dest=0x%04X [%s]  BC=0x%04X DE=0x%04X\n",
+                        hl, region, cpu_.get_bc(), cpu_.get_de());
+            }
+        }
+
         loader_.on_system_entry(pc, cpu_, bus_);
         loader_.on_cload_entry(pc, cpu_, bus_, injector_);
         loader_.on_cload_tracking(pc, cpu_, bus_, injector_);
@@ -116,10 +413,16 @@ void Emulator::step_frame(uint64_t t_budget) {
             continue;
 
         debugger_.record(cpu_, total_ticks_);
-        if (debugger_.check_freeze(pc))
-            debugger_.dump(bus_);
 
+        // Capture HL before execution so we can detect when the module copy-loop
+        // INC HL (at 0x4CDF) advances past a SVC-protected byte.  After the
+        // instruction executes the copy+verify is complete; restore the saved SVC
+        // dispatcher byte so the chain stays valid despite module data overwrites.
+        uint16_t hl_before_step = cpu_.get_hl();
         int ticks = cpu_.step();
+        if (pc == 0x4CDF && hl_before_step >= 0x50B0 && hl_before_step <= 0x50B7)
+            bus_.restore_svc_byte_after_verify(hl_before_step);
+
         bus_.add_ticks(ticks);
         frame_ts     += ticks;
         total_ticks_ += ticks;

@@ -18,7 +18,7 @@ SDL_LIBS = $(shell sdl2-config --libs)
 SOURCES = $(shell find $(SRC_DIR) -name '*.cpp')
 OBJECTS = $(SOURCES:$(SRC_DIR)/%.cpp=$(BUILD_DIR)/%.o)
 
-CXXFLAGS = $(CXXSTD) $(OPT) $(WARN) $(SDL_CFLAGS) -arch arm64
+CXXFLAGS = $(CXXSTD) $(OPT) $(WARN) $(SDL_CFLAGS) -arch arm64 -MMD -MP
 # OPT must appear in LDFLAGS too — LTO and PGO flags are needed at link time
 LDFLAGS = $(OPT) $(SDL_LIBS) -arch arm64
 
@@ -31,6 +31,9 @@ $(BUILD_DIR):
 
 $(TARGET): $(OBJECTS)
 	$(CXX) $(OBJECTS) -o $@ $(LDFLAGS)
+
+DEPS = $(OBJECTS:.o=.d)
+-include $(DEPS)
 
 $(BUILD_DIR)/%.o: $(SRC_DIR)/%.cpp
 	@mkdir -p $(dir $@)

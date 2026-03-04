@@ -37,6 +37,7 @@ bool FDC::load_disk(int drive, const std::string& path) {
            static_cast<std::streamsize>(size));
     drives_[drive].loaded     = true;
     drives_[drive].head_track = 0;
+    drives_[drive].tracks     = static_cast<int>(size / (SECTORS_PER_TRACK * BYTES_PER_SECTOR));
     // FD1771 power-on state: head on track 0, drive ready.
     // The Level II ROM checks: LD A,(0x37EC); INC A; CP 2; JP C, no_disk
     // Status 0x00 is treated same as 0xFF (no FDC). Must be >= 0x01.
@@ -44,8 +45,7 @@ bool FDC::load_disk(int drive, const std::string& path) {
     status_ = ST_TRACK0;
     std::cout << "[FDC] Drive " << drive << ": loaded " << path
               << " (" << size << " bytes, "
-              << size / (SECTORS_PER_TRACK * BYTES_PER_SECTOR)
-              << " tracks)\n";
+              << drives_[drive].tracks << " tracks)\n";
     return true;
 }
 
@@ -123,6 +123,7 @@ uint8_t FDC::read(uint16_t addr) {
     case 0x37EF: {  // Data register — drives the byte-by-byte transfer
         if (buf_len_ > 0 && buf_pos_ < buf_len_) {
             data_ = buf_[buf_pos_++];
+            if (buf_pos_ == 1) sector_write_flag_ = true;  // first byte consumed — next RAM write is the sector destination
             if (buf_pos_ >= buf_len_) {
                 // All bytes delivered — command complete
                 buf_len_  = 0;
@@ -193,6 +194,13 @@ void FDC::execute_command(uint8_t cmd) {
     write_pending_ = false;
     intrq_         = false;
 
+    static const char* cmd_names[] = {
+        "Restore","Seek","Step","StepU","StepIn","StepInU","StepOut","StepOutU",
+        "ReadSec","ReadSecM","WriteSec","WriteSecM","ReadAddr","ForceInt","ReadTrk","WriteTrk"
+    };
+    fprintf(stderr, "[FDC] cmd=0x%02X (%s) T%02d/S%d drv=%d\n",
+            cmd, cmd_names[cmd >> 4], track_, sector_, current_drive());
+
     uint8_t type = cmd >> 4;
     switch (type) {
     case 0x0:                          cmd_restore(cmd);              break;
@@ -212,6 +220,7 @@ void FDC::execute_command(uint8_t cmd) {
     // 0xE = Read Track, 0xF = Write Track — not needed for boot/run
     default:                           cmd_force_interrupt(0xD0);     break;
     }
+    // (result logged per-command for interesting cases only)
 }
 
 // ============================================================================
@@ -234,7 +243,7 @@ void FDC::cmd_seek(uint8_t /*cmd*/) {
 
     int target = data_;
     if (target < 0)           target = 0;
-    if (target >= MAX_TRACKS) target = MAX_TRACKS - 1;
+    if (target >= d->tracks)  target = d->tracks - 1;
 
     last_dir_     = (target > d->head_track) ? +1 : -1;
     d->head_track = target;
@@ -249,8 +258,8 @@ void FDC::cmd_step(uint8_t /*cmd*/, int dir, bool update_track) {
 
     last_dir_ = dir;
     int next  = d->head_track + dir;
-    if (next < 0)           next = 0;
-    if (next >= MAX_TRACKS) next = MAX_TRACKS - 1;
+    if (next < 0)          next = 0;
+    if (next >= d->tracks) next = d->tracks - 1;
 
     d->head_track = next;
     if (update_track) track_ = static_cast<uint8_t>(next);
@@ -270,7 +279,9 @@ void FDC::cmd_read_sector(uint8_t /*cmd*/) {
     int t = d->head_track;
     int s = sector_;
 
-    if (s >= SECTORS_PER_TRACK || t >= MAX_TRACKS) {
+    if (s >= SECTORS_PER_TRACK || t >= d->tracks) {
+        fprintf(stderr, "[FDC] RNF! head_track=%d sector_=%d (sectors_per_track=%d tracks=%d)\n",
+                t, s, SECTORS_PER_TRACK, d->tracks);
         status_ = ST_RNF;
         intrq_  = true;
         return;
@@ -281,10 +292,45 @@ void FDC::cmd_read_sector(uint8_t /*cmd*/) {
     buf_pos_ = 0;
     buf_len_ = BYTES_PER_SECTOR;
 
-    // Track 17 on Model I TRSDOS uses deleted data address mark (0xFA).
-    // The FD1771 reports this in status bit 5 (RECTYPE).
-    bool deleted = (t == 17);
+    last_read_track_  = t;
+    last_read_sector_ = s;
+
+    // Track 17 on Model I TRSDOS/LDOS: directory entry sectors (2+) use a
+    // deleted data address mark; GAT (sector 0) and HIT (sector 1) use a normal mark.
+    // On data tracks: LDOS SYS module *header* sectors begin with 0x1F (the copyright
+    // block length-prefix byte) and were formatted with deleted data marks on real
+    // hardware.  The FD1771 reports the mark type in bit 5 (RECTYPE=1 for deleted).
+    // LDOS uses RECTYPE to distinguish header sectors (parse module descriptor) from
+    // code sectors (copy raw bytes to load address).  JV1 images have no per-sector
+    // metadata, so we infer it from the content.
+    // Note: Track 0 sectors (boot loader, secondary boot) use NORMAL data marks —
+    // the second-stage at 0x4777 uses RECTYPE=0 to indicate "module code to copy".
+    bool deleted = ((t == 17) && (s >= 2))
+                || ((t != 17) && (bytes[0] == 0x1F));
     status_ = ST_BUSY | ST_DRQ | (deleted ? ST_RECTYPE : 0x00);
+
+    // Log sector type and inferred load address for every sector read.
+    if (t == 17) {
+        fprintf(stderr, "[SEC] T%02d/S%d DIR    bytes[0..3]=0x%02X 0x%02X 0x%02X 0x%02X\n",
+                t, s, bytes[0], bytes[1], bytes[2], bytes[3]);
+    } else if (bytes[0] == 0x1F) {
+        // Module header: 0x1F, len, name[8], load_hi, load_lo, ...
+        // LDOS SYS header layout: [0]=0x1F [1]=name_len [2..9]=name [10]=load_hi [11]=load_lo
+        char name[9] = {};
+        for (int i = 0; i < 8; i++) {
+            uint8_t c = bytes[i + 2];
+            name[i] = (c >= 0x20 && c < 0x7F) ? (char)c : '?';
+        }
+        uint16_t load = (uint16_t)(bytes[11] | (bytes[10] << 8));
+        fprintf(stderr, "[SEC] T%02d/S%d HEADER  name=\"%.8s\"  load=0x%04X  len=0x%02X  RECTYPE=%d\n",
+                t, s, name, load, bytes[1], deleted ? 1 : 0);
+    } else {
+        // Code sector: bytes[0..1] = LE load address
+        uint16_t load = (uint16_t)(bytes[0] | (bytes[1] << 8));
+        const char* region = (load > 0x7FFF) ? "HIGH" : "low ";
+        fprintf(stderr, "[SEC] T%02d/S%d CODE    load=0x%04X [%s]  data[0..3]=0x%02X 0x%02X 0x%02X 0x%02X\n",
+                t, s, load, region, bytes[2], bytes[3], bytes[4], bytes[5]);
+    }
 }
 
 void FDC::cmd_write_sector(uint8_t /*cmd*/) {
@@ -294,11 +340,13 @@ void FDC::cmd_write_sector(uint8_t /*cmd*/) {
     int t = d->head_track;
     int s = sector_;
 
-    if (s >= SECTORS_PER_TRACK || t >= MAX_TRACKS) {
+    if (s >= SECTORS_PER_TRACK || t >= d->tracks) {
+        fprintf(stderr, "[FDC] WriteSec RNF! head_track=%d sector_=%d\n", t, s);
         status_ = ST_RNF;
         intrq_  = true;
         return;
     }
+    fprintf(stderr, "[FDC] WriteSec T%02d/S%d starting...\n", t, s);
 
     write_pending_  = true;
     write_track_    = t;

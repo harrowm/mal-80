@@ -23,6 +23,11 @@ void Bus::reset() {
     rom.fill(0x00);
     vram.fill(0x20);  // Fill VRAM with spaces (0x20)
     ram.fill(0x00);
+    // Place a RET at the very top of RAM (0xFFFF).
+    // LDOS sets HIGH$=0xFFFF on a 48KB system.  If the kernel or a module
+    // follows that pointer and jumps to 0xFFFF, the RET sends it back to the
+    // caller gracefully instead of falling through to the ROM reset vector.
+    ram[0xFFFF - RAM_START] = 0xC9;
     rom_shadow_.fill(0x00);
     rom_shadow_active_.fill(false);
     global_t_states = 0;
@@ -96,6 +101,27 @@ uint8_t Bus::read(uint16_t addr, bool is_m1) {
     } else if (addr >= RAM_START && addr <= RAM_END) {
         // User RAM (0x4000 - 0xFFFF)
         value = ram[addr - RAM_START];
+        // Log every read of 0x403D to understand when/where LDOS checks the 48KB flag.
+        // When LDOS boot code (PC >= 0x4200) reads 0x403D, force bit 3 = 1 (48KB expansion
+        // present) so the boot loader loads high-RAM modules.  ROM code (PC < 0x3000) sees
+        // the real value so the display mode (32/64 col) is unaffected.
+        if (addr == 0x403D) {
+            if (last_cpu_pc_ >= 0x4000) {
+                value |= 0x08;  // tell LDOS: 48KB expansion RAM present
+                fprintf(stderr, "[403D] LDOS read → forced 0x%02X  PC=0x%04X\n", value, last_cpu_pc_);
+            } else {
+                fprintf(stderr, "[403D] ROM  read → real  0x%02X  PC=0x%04X\n", value, last_cpu_pc_);
+            }
+        }
+        // Log reads of the boot-time system variable area (find what LDOS uses for memsize)
+        if (addr >= 0x4040 && addr <= 0x406F) {
+            static bool memvar_logged[0x30] = {};
+            uint8_t off = (uint8_t)(addr - 0x4040);
+            if (!memvar_logged[off]) {
+                memvar_logged[off] = 1;
+                fprintf(stderr, "[MEMRD] first read 0x%04X = 0x%02X\n", addr, value);
+            }
+        }
     } else if (addr >= 0x37E0 && addr <= 0x37EF) {
         // Disk controller registers (expansion interface, memory-mapped)
         if (addr <= 0x37E3) {
@@ -159,7 +185,69 @@ void Bus::write(uint16_t addr, uint8_t val) {
         // Video RAM writes (0x3C00-0x3FFF)
         vram[addr - VRAM_START] = val;
     } else if (addr >= RAM_START && addr <= RAM_END) {
-        // User RAM writes (0x4000-0xFFFF)
+        // Save SVC dispatcher bytes when the kernel first initialises them (PC=0x4259).
+        // Allow all writes to pass through so module copy+verify succeeds;
+        // Emulator::step_frame() restores saved bytes after each INC HL at 0x4CDF.
+        if (addr >= 0x50B0 && addr <= 0x50B7 && last_cpu_pc_ == 0x4259) {
+            svc_saved_[addr - 0x50B0] = val;
+            if (addr == 0x50B7) {
+                uint16_t ptr = (uint16_t)(svc_saved_[6] | (svc_saved_[7] << 8));
+                svc_saved_valid_ = (ptr != 0x0000);
+                if (svc_saved_valid_)
+                    fprintf(stderr, "[SVC] dispatcher saved (chain=0x%04X); restores after each module copy\n", ptr);
+            }
+        }
+
+        // Log first write per 256-byte high-RAM page to track what gets written there
+        if (addr > 0x7FFF) {
+            static uint8_t high_pages_seen[128] = {};
+            uint8_t page = (uint8_t)((addr - 0x8000) >> 8);
+            if (!high_pages_seen[page]) {
+                high_pages_seen[page] = 1;
+                fprintf(stderr, "[HIGHRAM] first write to page 0x%04X  val=0x%02X  PC=0x%04X\n",
+                        (unsigned)(addr & 0xFF00u), val, last_cpu_pc_);
+            }
+        }
+
+        // Detailed logging for module target addresses that should get filled
+        // (C953=SYS0, CE10=SYS1, E9C1=SYS3) — log first 8 writes to each page
+        if ((addr >= 0xC900 && addr <= 0xC9FF) ||
+            (addr >= 0xCE00 && addr <= 0xCEFF) ||
+            (addr >= 0xE900 && addr <= 0xE9FF)) {
+            static int mod_write_count = 0;
+            if (mod_write_count < 24) {
+                ++mod_write_count;
+                fprintf(stderr, "[MODWR] 0x%04X = 0x%02X  PC=0x%04X\n", addr, val, last_cpu_pc_);
+            }
+        }
+
+        // Log ALL writes from the boot-loader PATCH applier at PC=0x4259.
+        // This shows exactly which addresses the primary boot stream patches.
+        if (last_cpu_pc_ == 0x4259) {
+            static int patch_count = 0;
+            static uint16_t prev_patch = 0xFFFF;
+            if (patch_count < 2000) {
+                ++patch_count;
+                if (patch_count == 1 || addr < prev_patch || addr > prev_patch + 1) {
+                    // New patch block — print the starting address
+                    fprintf(stderr, "[PATCH#%04d] → 0x%04X = 0x%02X\n", patch_count, addr, val);
+                }
+                prev_patch = addr;
+            }
+        }
+
+        // Log all writes to LDOS variable area from LDOS code — DISABLED (too noisy)
+        //if (addr >= 0x4040 && addr <= 0x40FF && last_cpu_pc_ >= 0x4000)
+        //    fprintf(stderr, "[VAR] write 0x%04X = 0x%02X  (PC=0x%04X)\n", addr, val, last_cpu_pc_);
+
+        // Log writes to 0x403D (48KB/display flag)
+        if (addr == 0x403D)
+            fprintf(stderr, "[403D] write=0x%02X  PC=0x%04X\n", val, last_cpu_pc_);
+
+        // Log first RAM write per FDC sector transfer (fires once per sector read)
+        if (fdc_.take_sector_write_flag())
+            fprintf(stderr, "[SECDST] T%02d/S%d → dest=0x%04X  PC=0x%04X\n",
+                    fdc_.last_read_track(), fdc_.last_read_sector(), addr, last_cpu_pc_);
         ram[addr - RAM_START] = val;
     }
     // ROM and keyboard are read-only, writes ignored
@@ -265,6 +353,7 @@ uint8_t Bus::read_port(uint8_t port) {
         }
         return val;
     }
+    fprintf(stderr, "[IO] IN port=0x%02X → 0xFF (unmapped)\n", port);
     return 0xFF;  // Unmapped ports
 }
 
@@ -272,6 +361,10 @@ void Bus::write_port(uint8_t port, uint8_t val) {
     if (port == 0xFF) {
         on_cassette_write(val);
         cas_prev_port_val = val;
+        return;
+    }
+    if (port != 0xFE && port != 0xFD) {  // 0xFE=printer data, 0xFD=printer strobe — harmless
+        fprintf(stderr, "[IO] OUT port=0x%02X ← 0x%02X (unmapped)\n", port, val);
     }
 }
 

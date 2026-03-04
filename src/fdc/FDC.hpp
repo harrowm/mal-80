@@ -26,7 +26,7 @@ public:
     static constexpr int DRIVES          = 4;
     static constexpr int SECTORS_PER_TRACK = 10;
     static constexpr int BYTES_PER_SECTOR  = 256;
-    static constexpr int MAX_TRACKS        = 35;   // standard TRSDOS disk
+    static constexpr int MAX_TRACKS        = 96;   // upper bound for bounds checks
 
     // Load a JV1 .dsk image into drive slot 0-3.  Returns false on error.
     bool load_disk(int drive, const std::string& path);
@@ -43,13 +43,23 @@ public:
         // Remember the last explicitly-selected drive so FDC commands continue
         // working after the host deselects drives for motor control (bits 0-2 = 0).
         // On real hardware the motor keeps spinning and the FDC stays responsive.
-        for (int i = 0; i < DRIVES; i++)
+        for (int i = 0; i < 3; i++)   // bits 0-2 = drives 0-2; bit 3 = side select
             if (val & (1 << i)) { last_drive_ = i; break; }
     }
 
     // INTRQ flag — combined into Bus::interrupt_pending().
     // Set when a command completes; cleared when FDC status (0x37EC) is read.
     bool intrq_pending() const { return intrq_; }
+
+    // True while a Read Sector transfer is in progress (DRQ data being consumed).
+    bool is_reading_sector() const { return buf_len_ > 0 && !write_pending_; }
+
+    // Consume the first-write flag — returns true exactly once per sector read start.
+    bool take_sector_write_flag() { return sector_write_flag_ ? (sector_write_flag_ = false, true) : false; }
+
+    // Track/sector of the most recently started Read Sector command.
+    int last_read_track()  const { return last_read_track_; }
+    int last_read_sector() const { return last_read_sector_; }
 
     // True if any drive has a disk loaded (used for expansion-interface detection).
     bool is_present() const;
@@ -61,6 +71,7 @@ private:
     struct Drive {
         std::vector<uint8_t> image;
         int  head_track = 0;
+        int  tracks     = 0;   // actual track count, computed from image size on load
         bool loaded     = false;
 
         std::vector<uint8_t> read_sector(int track, int sector) const;
@@ -94,6 +105,9 @@ private:
     int  write_sector_   = 0;
 
     bool intrq_ = false;   // Interrupt request pending
+    bool sector_write_flag_ = false;  // Set on first FDC data byte read; cleared by Bus::write()
+    int  last_read_track_   = 0;      // Track of most recent Read Sector command
+    int  last_read_sector_  = 0;      // Sector of most recent Read Sector command
 
     int last_dir_ = 1;     // Last step direction (+1 = in, -1 = out)
 

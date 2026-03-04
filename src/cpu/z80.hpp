@@ -51,6 +51,8 @@ public:
     void set_pc(uint16_t val)     { reg.pc     = val; }
     void set_sp(uint16_t val)     { reg.sp     = val; }
     void set_a(uint8_t val)       { reg.a      = val; }
+    void set_h(uint8_t val)       { reg.h      = val; }
+    void set_l(uint8_t val)       { reg.l      = val; }
     void set_iff1(bool val)       { reg.iff1   = val; }
     void set_iff2(bool val)       { reg.iff2   = val; }
     void set_halted(bool val)     { reg.halted = val; }

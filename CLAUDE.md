@@ -4,8 +4,9 @@
 C++20 TRS-80 Model I emulator targeting macOS M4 (arm64). Z80 CPU passes all
 67 ZEXALL tests. Has working CLOAD/CSAVE cassette emulation, SYSTEM (machine
 language loader), .bas file injection, turbo mode, --load CLI, 1-bit audio
-emulation (port 0xFF with IIR filters), and a circular trace buffer with freeze
-detector.
+emulation (port 0xFF with IIR filters), a circular trace buffer with freeze
+detector, FD1771 floppy disk controller emulation (JV1 format), and LDOS 5.3.1
+disk OS support.
 
 ## Build & Run
 ```
@@ -20,6 +21,8 @@ CLI:
 ```
 ./mal-80 --load <name>    # auto-load a file from software/ on startup
                            # e.g. --load scarfman  (matches SCARFMAN.cas)
+./mal-80 --disk <path>    # mount JV1 disk image on drive 0 (e.g. disks/ld1-531.dsk)
+./mal-80 --disk0..3 <p>   # mount on specific drive number
 ```
 
 ## Source Layout
@@ -153,9 +156,10 @@ Two-stage filter: IIR low-pass (α=0.363, ~4 kHz cutoff) + DC-blocking high-pass
 - `.bas` sorts before `.cas` — .bas takes priority if both exist
 
 ### Trace buffer + freeze detector (Debugger)
-- 500-entry circular buffer; records PC, all registers, IFF flags, ticks
+- 10000-entry circular buffer; records PC, all registers, IFF flags, ticks
 - Freeze detection: same-PC streak > 100,000 OR all PCs in last 64 steps
-  within a 64-byte range for 3,000,000 T-states (~1.7s)
+  within a 64-byte range for 300,000,000 T-states (~170s)
+- Threshold is high to avoid false triggers on LDOS idle loops
 - Dumps `trace.log` on freeze; also dumps on clean exit
 
 ## Cassette Timing Constants (Bus.hpp)
@@ -182,6 +186,31 @@ HP_ALPHA         = 0.999  DC-blocking high-pass α (~7 Hz cutoff)
 AMPLITUDE        = 16384  int16_t peak (half of max, leaves headroom)
 MAX_QUEUED_FRAMES = 4     cap on SDL audio queue (~67 ms)
 ```
+
+## LDOS Notes
+
+### 48KB RAM flag fix (`Bus.cpp` — `Bus::write()`)
+The TRS-80 ROM stores a 48KB expansion flag in RAM at `0x403D` (bit 3).
+Normally the ROM sets this flag when the user answers the "MEMORY SIZE?" prompt.
+But when booting from disk, LDOS pre-empts that prompt by booting directly from
+the disk before the RAM detection routine runs. The flag stays 0, causing LDOS
+to think it's running on a 16KB machine and place overlay modules at addresses
+that collide with the SVC (service call) chain at `0x50B6:0x50B7`, crashing LDOS
+after date/time entry.
+
+Fix: in `Bus::write()`, when `addr == 0x403D`, force `val |= 0x08` before
+storing. Our emulator always has full 48KB RAM, so this is always correct.
+
+### FDC (src/fdc/FDC.hpp/cpp)
+FD1771-compatible controller. JV1 disk format: 35 tracks, 10 sectors/track,
+256 bytes/sector. Drive 0 is the boot drive. LDOS boots from T00/S0.
+Disk images in `disks/` directory.
+
+### LDOS Disk Layout Reference
+`docs/LDOS_DISK_LAYOUT.md` — comprehensive reference covering JV1 format,
+memory map, track layout, GAT/HIT/directory format, granule addressing, boot
+track sector table, kernel sector load addresses, module copy loop, LDOS RAM
+variables, ROM intercept addresses, and boot sequence.
 
 ## User Preferences
 - Workflow: make change → user tests → then commit + push (never push untested)
