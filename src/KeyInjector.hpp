@@ -23,6 +23,9 @@ public:
 
     bool is_active() const { return !queue_.empty(); }
 
+    // Discard all queued characters (call on emulator reset).
+    void clear() { queue_ = std::queue<uint8_t>{}; }
+
     // Call every step.  If pc == ROM_KEY and the queue is non-empty,
     // pops one character, fakes a RET with it in A, advances frame_ts,
     // and returns true (caller must skip cpu.step() for this cycle).

@@ -18,6 +18,10 @@ SDL_LIBS = $(shell sdl2-config --libs)
 SOURCES = $(shell find $(SRC_DIR) -name '*.cpp')
 OBJECTS = $(SOURCES:$(SRC_DIR)/%.cpp=$(BUILD_DIR)/%.o)
 
+# tinyfiledialogs: plain C, compiled separately (native macOS file dialogs)
+TFD_SRC = $(SRC_DIR)/tinyfiledialogs.c
+TFD_OBJ = $(BUILD_DIR)/tinyfiledialogs.o
+
 CXXFLAGS = $(CXXSTD) $(OPT) $(WARN) $(SDL_CFLAGS) -arch arm64 -MMD -MP
 # OPT must appear in LDFLAGS too — LTO and PGO flags are needed at link time
 LDFLAGS = $(OPT) $(SDL_LIBS) -arch arm64
@@ -29,8 +33,11 @@ $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)/system
 	mkdir -p $(BUILD_DIR)/video
 
-$(TARGET): $(OBJECTS)
-	$(CXX) $(OBJECTS) -o $@ $(LDFLAGS)
+$(TFD_OBJ): $(TFD_SRC) | $(BUILD_DIR)
+	$(CC) -c $< -o $@ -arch arm64 -O2 -w
+
+$(TARGET): $(OBJECTS) $(TFD_OBJ)
+	$(CXX) $(OBJECTS) $(TFD_OBJ) -o $@ $(LDFLAGS)
 
 DEPS = $(OBJECTS:.o=.d)
 -include $(DEPS)
@@ -43,7 +50,7 @@ run: $(TARGET)
 	./$(TARGET)
 
 clean:
-	rm -rf $(BUILD_DIR) $(TARGET) zexall_test
+	rm -rf $(BUILD_DIR) $(TARGET) zexall_test $(TFD_OBJ)
 
 # ============================================================================
 # PGO (Profile-Guided Optimisation)

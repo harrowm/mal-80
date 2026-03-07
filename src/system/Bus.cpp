@@ -42,6 +42,40 @@ void Bus::reset() {
     cas_prev_port_val = 0;
 }
 
+void Bus::soft_reset() {
+    // Soft reset: like pressing the physical reset button.
+    // Preserves ROM (still loaded) and RAM (contents retained).
+    // Clears VRAM, cassette state, ROM shadow, and timing counters.
+    vram.fill(0x20);
+    rom_shadow_.fill(0x00);
+    rom_shadow_active_.fill(false);
+    global_t_states = 0;
+    current_scanline = 0;
+    t_states_in_scanline = 0;
+    int_pending = false;
+    int_for_latch = false;
+    iff_enabled = true;
+    cas_state = CassetteState::IDLE;
+    cas_data.clear();
+    cas_rec_data.clear();
+    cas_prev_port_val = 0;
+    cas_last_cycle_t = 0;
+    cas_rec_cycle_count = 0;
+    cas_rec_byte = 0;
+    cas_rec_bit_count = 0;
+    cas_last_activity_t = 0;
+    cas_last_logged_byte = SIZE_MAX;
+    cas_port_read_log_count = 0;
+    svc_saved_valid_ = false;
+}
+
+void Bus::hard_reset() {
+    // Hard reset: power cycle — same as soft reset but also clears RAM.
+    soft_reset();
+    ram.fill(0x00);
+    ram[0xFFFF - RAM_START] = 0xC9;  // graceful top-of-RAM sentinel
+}
+
 void Bus::load_rom(const std::string& path, uint16_t offset) {
     std::ifstream file(path, std::ios::binary);
     if (!file.is_open()) {

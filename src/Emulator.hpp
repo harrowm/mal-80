@@ -39,9 +39,10 @@ private:
     std::chrono::steady_clock::time_point frame_start_;
     uint64_t  total_ticks_        = 0;
 
-    CassetteState prev_cas_state_ = CassetteState::IDLE;
-    SpeedMode     prev_speed_     = SpeedMode::NORMAL;
-    uint16_t      prev_pc_        = 0;
+    CassetteState prev_cas_state_  = CassetteState::IDLE;
+    SpeedMode     prev_speed_      = SpeedMode::NORMAL;
+    std::string   prev_disk0_name_;
+    uint16_t      prev_pc_         = 0;
     bool          ldos_active_        = false;
     bool          ldos_date_injected_ = false;
     bool          auto_ldos_date_     = false;

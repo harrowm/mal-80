@@ -12,107 +12,148 @@ class Bus;
 // ============================================================================
 // TRS-80 VIDEO CONSTANTS
 // ============================================================================
-// The TRS-80 Model I displays 64 characters × 16 lines
-// Each character cell is 6 pixels wide × 12 pixels tall
-//   (6-wide dot matrix from char ROM × 8 rows, plus 4 rows inter-line gap)
-// ============================================================================
+constexpr uint16_t TRS80_CHARS_PER_LINE    = 64;
+constexpr uint16_t TRS80_CHAR_LINES        = 16;
+constexpr uint16_t TRS80_VRAM_SIZE         = 1024;  // 64 × 16
 
-constexpr uint16_t TRS80_CHARS_PER_LINE = 64;
-constexpr uint16_t TRS80_CHAR_LINES = 16;
-constexpr uint16_t TRS80_VRAM_SIZE = 1024;  // 64 × 16 = 1024 bytes
+constexpr uint16_t CHAR_CELL_W             = 6;   // pixels wide per cell
+constexpr uint16_t CHAR_CELL_H             = 12;  // pixels tall per cell
 
-// Character cell dimensions
-constexpr uint16_t CHAR_CELL_W = 6;   // 6 pixels wide (bits 5..0 of ROM byte)
-constexpr uint16_t CHAR_CELL_H = 12;  // 12 pixels tall (8 ROM rows + 4 blank)
+constexpr uint16_t TRS80_WIDTH             = TRS80_CHARS_PER_LINE * CHAR_CELL_W;  // 384
+constexpr uint16_t TRS80_HEIGHT            = TRS80_CHAR_LINES * CHAR_CELL_H;      // 192
 
-// Logical resolution (what the TRS-80 actually outputs)
-constexpr uint16_t TRS80_WIDTH  = TRS80_CHARS_PER_LINE * CHAR_CELL_W;  // 384
-constexpr uint16_t TRS80_HEIGHT = TRS80_CHAR_LINES * CHAR_CELL_H;      // 192
+constexpr uint16_t WINDOW_SCALE            = 3;
+constexpr uint16_t WINDOW_WIDTH            = TRS80_WIDTH  * WINDOW_SCALE;  // 1152
+constexpr uint16_t WINDOW_HEIGHT           = TRS80_HEIGHT * WINDOW_SCALE;  // 576
 
-// Window resolution (scaled up for modern displays)
-constexpr uint16_t WINDOW_SCALE = 3;
-constexpr uint16_t WINDOW_WIDTH  = TRS80_WIDTH  * WINDOW_SCALE;  // 1152
-constexpr uint16_t WINDOW_HEIGHT = TRS80_HEIGHT * WINDOW_SCALE;  // 576
-
-// Character generator (6-wide dot matrix, stored as 8 bytes per char)
-constexpr uint16_t CHAR_GEN_CHARS = 128;
+constexpr uint16_t CHAR_GEN_CHARS          = 128;
 constexpr uint16_t CHAR_GEN_BYTES_PER_CHAR = 8;
 
-// Colors — ARGB8888 format: uint32_t = 0xAARRGGBB
-// On little-endian ARM64 this is stored in memory as B,G,R,A = MTLPixelFormatBGRA8Unorm (no SDL conversion)
-constexpr uint32_t COLOR_BLACK = 0xFF000000;   // A=255 R=0   G=0   B=0
-constexpr uint32_t COLOR_GREEN = 0xFF00FF00;   // A=255 R=0   G=255 B=0
-constexpr uint32_t COLOR_AMBER = 0xFFFFBF00;   // A=255 R=255 G=191 B=0
+// ============================================================================
+// PHOSPHOR COLOUR PRESETS  (ARGB8888)
+//   0 = white phosphor  1 = amber (P3)  2 = green (P1)
+// ============================================================================
+inline constexpr uint32_t PHOSPHOR_FG[3] = { 0xFFFFFFFF, 0xFFFFB000, 0xFF33FF00 };
+inline constexpr uint32_t PHOSPHOR_BG[3] = { 0xFF000000, 0xFF0A0500, 0xFF001400 };
 
+// Legacy named colour constants (kept for source compatibility)
+constexpr uint32_t COLOR_BLACK = 0xFF000000;
+constexpr uint32_t COLOR_GREEN = 0xFF33FF00;
+constexpr uint32_t COLOR_AMBER = 0xFFFFBF00;
+
+// ============================================================================
+// PENDING ACTIONS
+// Actions that need Bus/CPU access are reported back to the Emulator.
+// ============================================================================
+enum class DisplayAction {
+    NONE,
+    SOFT_RESET,       // F10
+    HARD_RESET,       // Shift+F10
+    MOUNT_DISK,       // Ctrl+0..3  (drive index in pop_action drive_out)
+    PASTE_CLIPBOARD,  // Ctrl+V
+};
+
+// ============================================================================
+// DISPLAY CLASS
+// ============================================================================
 class Display {
 public:
     Display();
     ~Display();
 
-    // Initialize SDL window and renderer
     bool init(const std::string& title);
     void cleanup();
 
-    // Render a complete frame (called once per 60Hz frame)
+    // Render a complete frame from VRAM (skips if overlay is active)
     void render_frame(const Bus& bus);
 
-    // Render a single scanline (for cycle-accurate rendering - optional)
+    // Render a single scanline (cycle-accurate path — optional)
     void render_scanline(const Bus& bus, uint16_t scanline);
 
-    // Handle SDL events (keyboard, quit, etc.)
+    // Poll SDL events.  Returns false when the user requests quit.
     bool handle_events(uint8_t* keyboard_matrix);
 
-    // Screen control
     void clear_screen();
     void set_title(const std::string& title);
     bool is_running() const { return running; }
 
-    // Get character pattern from built-in character generator
+    // Consume the oldest pending action.  drive_out is set for MOUNT_DISK.
+    DisplayAction pop_action(int& drive_out);
+
+    // Release all active key presses (call on emulator reset).
+    void release_all_keys(uint8_t* keyboard_matrix);
+
+    // Character pattern lookup (public so Bus/Loader can use it)
     uint8_t get_char_pattern(uint8_t char_code, uint8_t row) const;
 
 private:
     // =========================================================================
     // SDL STATE
     // =========================================================================
-    SDL_Window* window = nullptr;
-    SDL_Renderer* renderer = nullptr;
-    SDL_Texture* screen_texture = nullptr;
+    SDL_Window*   window         = nullptr;
+    SDL_Renderer* renderer       = nullptr;
+    SDL_Texture*  screen_texture = nullptr;
     bool running = true;
 
     // =========================================================================
-    // FRAMEBUFFER (384×192 pixels, 32-bit color)
+    // FRAMEBUFFER  (384×192, 32-bit ARGB8888)
     // =========================================================================
-    std::array<uint32_t, TRS80_WIDTH * TRS80_HEIGHT> framebuffer;
+    std::array<uint32_t, TRS80_WIDTH * TRS80_HEIGHT> framebuffer{};
 
     // =========================================================================
-    // CHARACTER GENERATOR ROM (128 characters × 8 bytes each)
-    // This is the built-in TRS-80 character pattern
+    // CHARACTER GENERATOR ROM
     // =========================================================================
-    std::array<uint8_t, CHAR_GEN_CHARS * CHAR_GEN_BYTES_PER_CHAR> char_generator;
+    std::array<uint8_t, CHAR_GEN_CHARS * CHAR_GEN_BYTES_PER_CHAR> char_generator{};
+    void init_char_generator();
+
+    // =========================================================================
+    // PHOSPHOR STATE
+    // =========================================================================
+    int      phosphor_mode_ = 0;
+    uint32_t pixel_fg_      = PHOSPHOR_FG[0];  // "on" pixel colour
+    uint32_t pixel_bg_      = PHOSPHOR_BG[0];  // "off" pixel colour
+
+    // =========================================================================
+    // IN-WINDOW OVERLAY  (help / about)
+    // =========================================================================
+    std::array<uint32_t, TRS80_WIDTH * TRS80_HEIGHT> overlay_saved_{};
+    bool overlay_active_ = false;
+    int  overlay_kind_   = 0;  // 1 = help, 2 = about
+
+    void show_overlay(int kind);
+    void hide_overlay();
+
+    // =========================================================================
+    // PENDING ACTION  (set by hotkey, consumed by Emulator::run)
+    // =========================================================================
+    DisplayAction pending_action_ = DisplayAction::NONE;
+    int           pending_drive_  = -1;
 
     // =========================================================================
     // RENDERING HELPERS
     // =========================================================================
-    void init_char_generator();
     void draw_pixel(uint16_t x, uint16_t y, bool on);
     void draw_character(uint16_t char_x, uint16_t char_y, uint8_t char_code);
     void update_texture();
 
+    // Overlay pixel helpers
+    void fill_rect_fb(int x, int y, int w, int h, uint32_t color);
+    void draw_char_pixels(int px, int py, uint8_t c, uint32_t fg, uint32_t bg);
+    void draw_string_pixels(int px, int py, const char* s, uint32_t fg, uint32_t bg);
+
     // =========================================================================
-    // KEYBOARD MATRIX (64 keys, 8×8 matrix)
+    // KEYBOARD MATRIX
     // =========================================================================
-    uint8_t keyboard_matrix[8];
+    uint8_t keyboard_matrix[8]{};
     void init_keyboard_matrix();
-    
-    // Mac-to-TRS-80 shift remapping state
-    bool physical_shift_held = false;
-    int synthetic_shift_count = 0;
-    
-    // Track active key mappings so key-up undoes exactly what key-down did
+
+    bool physical_shift_held   = false;
+    int  synthetic_shift_count = 0;
+
     struct TRS80KeyMapping {
         uint8_t row;
         uint8_t col;
-        int shift_override;  // 0=none, 1=forced on, -1=forced off
+        int     shift_override;  // 0=none, 1=force on, -1=force off
     };
-    std::unordered_map<int, TRS80KeyMapping> active_keys;  // keyed by SDL scancode
+    std::unordered_map<int, TRS80KeyMapping> active_keys;
 };

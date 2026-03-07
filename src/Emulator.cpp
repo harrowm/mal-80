@@ -2,6 +2,7 @@
 #include <iostream>
 #include <cstring>
 #include <SDL.h>
+#include "tinyfiledialogs.h"
 
 static constexpr uint64_t T_STATES_PER_FRAME = 29498;        // ~60 Hz
 static constexpr uint64_t TURBO_T_STATES     = T_STATES_PER_FRAME * 100;
@@ -74,6 +75,74 @@ bool Emulator::init(int argc, char* argv[]) {
 void Emulator::run() {
     while (display_.is_running()) {
         display_.handle_events(keyboard_matrix_);
+
+        // ── Process emulator actions triggered by hotkeys ─────────────────
+        {
+            int drive_out = -1;
+            switch (display_.pop_action(drive_out)) {
+
+            case DisplayAction::SOFT_RESET:
+                // Warm boot: jump straight to the BASIC READY prompt,
+                // preserving the program in RAM.  Don't reset CPU registers
+                // or RAM — BASIC's stack and variables stay intact.
+                cpu_.set_pc(0x1A19);
+                cpu_.set_iff1(false);
+                cpu_.set_iff2(false);
+                cpu_.set_halted(false);
+                bus_.stop_cassette();
+                display_.release_all_keys(keyboard_matrix_);
+                injector_.clear();
+                cur_speed_          = user_speed_;
+                turbo_render_count_ = 0;
+                frame_start_        = std::chrono::steady_clock::now();
+                sound_.clear();
+                break;
+
+            case DisplayAction::HARD_RESET:
+                bus_.hard_reset();
+                cpu_.reset();
+                display_.release_all_keys(keyboard_matrix_);
+                injector_.clear();
+                total_ticks_        = 0;
+                prev_pc_            = 0;
+                ldos_active_        = false;
+                ldos_date_injected_ = false;
+                sys12_dispatched_   = false;
+                cur_speed_          = user_speed_;
+                turbo_render_count_ = 0;
+                frame_start_        = std::chrono::steady_clock::now();
+                sound_.clear();
+                break;
+
+            case DisplayAction::MOUNT_DISK:
+                if (drive_out >= 0 && drive_out < 4) {
+                    static const char* filters[] = {"*.dsk","*.dmk","*.imd","*.jv1"};
+                    char dlg_title[32];
+                    snprintf(dlg_title, sizeof(dlg_title), "Mount disk — drive %d", drive_out);
+                    const char* path = tinyfd_openFileDialog(
+                        dlg_title, "disks/", 4, filters, "Disk images", 0);
+                    if (path && *path) {
+                        if (!bus_.load_disk(drive_out, path))
+                            std::cerr << "[DISK] Failed to mount: " << path << "\n";
+                    }
+                    // Reset frame timer: dialog may have taken several seconds
+                    frame_start_ = std::chrono::steady_clock::now();
+                }
+                break;
+
+            case DisplayAction::PASTE_CLIPBOARD: {
+                char* text = SDL_GetClipboardText();
+                if (text && *text)
+                    injector_.enqueue(std::string(text));
+                if (text) SDL_free(text);
+                break;
+            }
+
+            case DisplayAction::NONE:
+            default:
+                break;
+            }
+        }
 
         // Auto-select speed: turbo while keyboard injection is active
         SpeedMode desired = injector_.is_active() ? SpeedMode::TURBO : user_speed_;
@@ -471,16 +540,29 @@ void Emulator::deliver_interrupt(uint64_t& frame_ts) {
 
 void Emulator::update_title() {
     CassetteState cur_cas = bus_.get_cassette_state();
-    if (cur_cas == prev_cas_state_ && cur_speed_ == prev_speed_) return;
+    std::string   disk0   = bus_.get_disk_name(0);
+
+    if (cur_cas == prev_cas_state_ && cur_speed_ == prev_speed_ &&
+        disk0   == prev_disk0_name_)
+        return;
+
+    // Base: "Mal-80 [disk.dsk]" or just "Mal-80"
+    std::string base = "Mal-80";
+    if (!disk0.empty()) {
+        size_t pos = disk0.rfind('/');
+        std::string fname = (pos != std::string::npos) ? disk0.substr(pos + 1) : disk0;
+        base += " [" + fname + "]";
+    }
 
     std::string status    = bus_.get_cassette_status();
     std::string speed_tag = (cur_speed_ == SpeedMode::TURBO) ? " [TURBO]" : "";
     display_.set_title(status.empty()
-        ? "Mal-80 - TRS-80 Emulator" + speed_tag
-        : "Mal-80 - " + status + speed_tag);
+        ? base + " - TRS-80 Emulator" + speed_tag
+        : base + " - " + status + speed_tag);
 
-    prev_cas_state_ = cur_cas;
-    prev_speed_     = cur_speed_;
+    prev_cas_state_  = cur_cas;
+    prev_speed_      = cur_speed_;
+    prev_disk0_name_ = disk0;
 }
 
 void Emulator::pace_frame() {

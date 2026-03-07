@@ -64,6 +64,13 @@ public:
     // True if any drive has a disk loaded (used for expansion-interface detection).
     bool is_present() const;
 
+    // Return the path of the disk image loaded in the given drive, or "" if empty.
+    const std::string& get_disk_name(int drive) const {
+        static const std::string empty;
+        if (drive < 0 || drive >= DRIVES) return empty;
+        return disk_names_[drive];
+    }
+
 private:
     // =========================================================================
     // DRIVE STATE
@@ -110,6 +117,8 @@ private:
     int  last_read_sector_  = 0;      // Sector of most recent Read Sector command
 
     int last_dir_ = 1;     // Last step direction (+1 = in, -1 = out)
+
+    std::array<std::string, DRIVES> disk_names_;  // Path of each loaded disk image
 
     // =========================================================================
     // HELPERS

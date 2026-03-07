@@ -36,6 +36,7 @@ bool FDC::load_disk(int drive, const std::string& path) {
     f.read(reinterpret_cast<char*>(drives_[drive].image.data()),
            static_cast<std::streamsize>(size));
     drives_[drive].loaded     = true;
+    disk_names_[drive]        = path;
     drives_[drive].head_track = 0;
     drives_[drive].tracks     = static_cast<int>(size / (SECTORS_PER_TRACK * BYTES_PER_SECTOR));
     // FD1771 power-on state: head on track 0, drive ready.

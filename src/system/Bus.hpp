@@ -60,7 +60,9 @@ public:
     void add_ticks(int t);
 
     // System Interface (called from Main Loop)
-    void reset();
+    void reset();       // Power-on init (called from constructor; clears ROM+RAM)
+    void soft_reset();  // Soft reset: clears VRAM/cassette/state, preserves ROM+RAM
+    void hard_reset();  // Hard reset: soft_reset + clears RAM (simulates power cycle)
     void load_rom(const std::string& path, uint16_t offset = ROM_START);
     void trigger_interrupt();
     bool interrupt_pending() const { return int_pending || fdc_.intrq_pending(); }
@@ -83,6 +85,7 @@ public:
     // Disk Interface
     bool load_disk(int drive, const std::string& path);
     bool fdc_present() const { return fdc_.is_present(); }
+    std::string get_disk_name(int drive) const { return fdc_.get_disk_name(drive); }
 
     // Cassette File Operations
     bool load_cas_file(const std::string& path);
