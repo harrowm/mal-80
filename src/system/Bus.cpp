@@ -212,11 +212,6 @@ void Bus::write(uint16_t addr, uint8_t val) {
     } else if (addr >= 0x37E0 && addr <= 0x37EF) {
         // Disk controller registers (expansion interface)
         fdc_.set_pc(last_cpu_pc_);
-        if (addr == 0x37EC) {
-            fprintf(stderr, "[FDC] cmd=0x%02X  PC=0x%04X\n", val, last_cpu_pc_);
-        } else if (addr == 0x37EF) {
-            fprintf(stderr, "[FDC] data(seek_trk)=0x%02X  PC=0x%04X\n", val, last_cpu_pc_);
-        }
         fdc_.write(addr, val);
         // Track Type I idle state for INDEX PULSE simulation.
         // Type I commands (Restore/Seek/Step, upper nibble 0–7) leave the drive

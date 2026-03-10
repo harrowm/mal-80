@@ -103,10 +103,6 @@ bool FDC::Drive::write_sector(int track, int sector,
         // Extend image if needed (e.g. formatting a larger disk)
         image.resize(offset + BYTES_PER_SECTOR, 0x00);
     }
-    // Log first 32 bytes of write for debugging
-    fprintf(stderr, "[FDC] WriteSec T%02d/S%d data:", track, sector);
-    for (int i = 0; i < 32; i++) fprintf(stderr, " %02X", data[i]);
-    fprintf(stderr, "\n");
     std::copy(data.begin(), data.end(),
               image.begin() + static_cast<ptrdiff_t>(offset));
     return true;
@@ -203,22 +199,6 @@ void FDC::execute_command(uint8_t cmd) {
     intrq_         = false;
 
     uint8_t type = cmd >> 4;
-    {
-        Drive* tmp = active_drive();
-        int t = tmp ? tmp->head_track : -1;
-        switch (type) {
-        case 0x0: fprintf(stderr, "[FDC] Restore\n"); break;
-        case 0x1: fprintf(stderr, "[FDC] Seek -> T%02d\n", (int)data_); break;
-        case 0x2: case 0x3: fprintf(stderr, "[FDC] Step(T%02d)\n", t); break;
-        case 0x4: case 0x5: fprintf(stderr, "[FDC] StepIn(T%02d)\n", t); break;
-        case 0x6: case 0x7: fprintf(stderr, "[FDC] StepOut(T%02d)\n", t); break;
-        case 0x8: case 0x9: /* logged in cmd_read_sector with sector data */ break;
-        case 0xA: case 0xB: fprintf(stderr, "[FDC] WriteSec T%02d/S%d\n", t, (int)sector_); break;
-        case 0xC: fprintf(stderr, "[FDC] ReadAddr T%02d (sector_=%d)\n", t, (int)sector_); break;
-        case 0xD: fprintf(stderr, "[FDC] ForceInt 0x%02X\n", cmd); break;
-        default:  fprintf(stderr, "[FDC] Unknown cmd 0x%02X\n", cmd); break;
-        }
-    }
     switch (type) {
     case 0x0:                          cmd_restore(cmd);              break;
     case 0x1:                          cmd_seek(cmd);                 break;
@@ -310,12 +290,7 @@ void FDC::cmd_read_sector(uint8_t /*cmd*/) {
     buf_pos_ = 0;
     buf_len_ = BYTES_PER_SECTOR;
 
-    // Log in xtrs-compatible format for comparison
     bool deleted = (t == 17);
-    fprintf(stderr, "[FDC-mal80] ReadSector drv=%d trk=%d sec=%d rectype=%d pc=0x%04X bytes:",
-            current_drive(), t, s, (int)deleted, (unsigned)last_pc_);
-    for (int i = 0; i < 16; i++) fprintf(stderr, " %02x", bytes[i]);
-    fprintf(stderr, "\n");
 
     last_read_track_  = t;
     last_read_sector_ = s;
