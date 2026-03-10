@@ -58,3 +58,9 @@ tests/zexall/*.com
 # debug information files
 *.dwo
 *.log
+
+# Debug/investigation artifacts
+memdump.bin
+memdump_dir.bin
+diag_dir*.txt
+trace.log

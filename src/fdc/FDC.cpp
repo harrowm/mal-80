@@ -311,8 +311,9 @@ void FDC::cmd_read_sector(uint8_t /*cmd*/) {
     buf_len_ = BYTES_PER_SECTOR;
 
     // Log in xtrs-compatible format for comparison
-    fprintf(stderr, "[FDC-mal80] ReadSector drv=%d trk=%d sec=%d pc=0x%04X bytes:",
-            current_drive(), t, s, (unsigned)last_pc_);
+    bool deleted = (t == 17);
+    fprintf(stderr, "[FDC-mal80] ReadSector drv=%d trk=%d sec=%d rectype=%d pc=0x%04X bytes:",
+            current_drive(), t, s, (int)deleted, (unsigned)last_pc_);
     for (int i = 0; i < 16; i++) fprintf(stderr, " %02x", bytes[i]);
     fprintf(stderr, "\n");
 
@@ -323,7 +324,6 @@ void FDC::cmd_read_sector(uint8_t /*cmd*/) {
     // marks on ALL sectors (S0 GAT through S9).  All other tracks use FB (normal).
     // This matches xtrs behaviour and is required by LDOS's module loader, which
     // checks RECTYPE to distinguish directory-track sectors from data sectors.
-    bool deleted = (t == 17);
     status_ = ST_BUSY | ST_DRQ | (deleted ? ST_RECTYPE : 0x00);
 
 }

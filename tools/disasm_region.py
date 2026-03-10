@@ -42,12 +42,13 @@ def disasm(start: int, end: int, labels_file: str | None = None) -> str:
 
     try:
         cmd = [Z80DASM,
-               '--address', str(start),
-               '--origin', hex(start),
-               '--labels',
+               '-a',                    # print address in comment
+               '-l',                    # create labels for jumps
+               '-t',                    # print hex/ascii data bytes
+               f'--origin={hex(start)}',
                tmp_path]
         if labels_file:
-            cmd += ['--sym-input', labels_file]
+            cmd += [f'--sym-input={labels_file}']
         result = subprocess.run(cmd, capture_output=True, text=True)
         return result.stdout + (result.stderr if result.stderr else '')
     finally:

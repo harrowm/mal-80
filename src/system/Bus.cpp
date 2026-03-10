@@ -154,6 +154,17 @@ uint8_t Bus::read(uint16_t addr, bool is_m1) {
             value = 0x30;
         } else {
             value = fdc_.read(addr);   // 0x37EC-0x37EF: FDC registers
+            // Simulate FD1771 INDEX PULSE (bit 1) during Type I idle state.
+            // After Seek/Restore/Step, status_ has no BUSY, no DRQ, no RECTYPE.
+            // LDOS motor-wait loops (l4e78h/l4e7dh/l4e82h inside SVC 0xC4) need
+            // bit 1 to oscillate with disk rotation before calling VALIDATE_ENTRY.
+            // Real disk: 300 RPM → index pulse once per ~354,800 T-states (~5% duty).
+            if (addr == 0x37EC && (value == 0x00 || value == 0x04 /* ST_TRACK0 */)) {
+                constexpr uint64_t INDEX_PERIOD = 354800;  // T-states / revolution
+                constexpr uint64_t INDEX_WIDTH  =  17740;  // ~5% duty ≈ 1 ms at 1.774 MHz
+                if ((global_t_states % INDEX_PERIOD) < INDEX_WIDTH)
+                    value |= 0x02;  // bit 1 = INDEX PULSE in Type I idle
+            }
         }
     } else {
         // Unmapped memory (0x3000-0x37DF)

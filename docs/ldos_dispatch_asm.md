@@ -47,33 +47,37 @@ to the first 3 bytes (JP 0x45FB = DRIVER_ENTRY). This is how drive 0's dispatch 
 
 ---
 
-## 0x4750–0x4776 — Secondary dispatch table / sub-command jumps
+## 0x4750–0x4776 — IRQ_DRV_DISPATCH: re-issue pending disk command
+
+**Not** a simple secondary dispatch table — this is called from the **IRQ timer path**
+(0x4551) to re-issue a pending disk driver command after an interrupt fires.
+
+Reads saved command from 0x4308 (SAVED_C), then jumps to 0x4779 with the right A value.
+Each entry sets A to a different driver command code before falling through to 0x4779.
 
 ```z80
-4750  3A 08 43    ld a,(0x4308)      ; load saved C (drive command byte)
-4753  4F          ld c,a             ; C = drive command
-
-; Dispatch on command value:
-4754  3E 01       ld a, 1
-4756  18 XX       jr $+35            ; → some target
-4758  00          nop
-4759  3E 07       ld a, 7
-475B  18 XX       jr $+30            ; → some target
-475D  00          nop
-475E  3E 06       ld a, 6
-4760  18 XX       jr $+25            ; → some target
-4762  FF          rst 38h            ; (never reached normally)
-4763  3E 0D       ld a, 0x0D
-4765  18 XX       jr $+20
-4767  01 3E 0E    ld bc, 0x0E3E      ; (or data)
-476A  18 XX       jr $+15
-476C  00          nop
-476D  3E 0F       ld a, 0x0F
-476F  18 XX       jr $+10
-4771  00          nop
-4772  3E 0A       ld a, 0x0A         ; ← 0x4772 called from 0x4B28 (second probe)
-4774  18 03       jr $+5             ; → 0x4777? Wait: $ = 0x4774, +5 → 0x4779
-4776  00          nop
+4750  ld a,(0x4308)  ; SAVED_C — last driver command byte
+4753  ld c,a
+4754  ld a,1         ; re-issue as command 1
+4756  jr 0x4779      ; → SETUP_IY + B←A + JP(IY)
+4758  nop
+4759  ld a,7         ; re-issue as command 7
+475B  jr 0x4779
+475D  nop
+475E  ld a,6         ; command 6
+4760  jr 0x4779
+4762  ff             ; (rst 38h — unreachable normally)
+4763  ld a,0x0D
+4765  jr 0x4779
+4767  ld bc,0x0E3E
+476A  jr 0x4779
+476C  nop
+476D  ld a,0x0F
+476F  jr 0x4779
+4771  nop
+4772  ld a,0x0A      ; ← also called from 0x4B28 (second validation probe variant)
+4774  jr 0x4779
+4776  nop
 ```
 
 ---
