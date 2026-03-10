@@ -1227,11 +1227,6 @@ void Z80::init_ed_table() {
 
     // ---- LDIR (ED B0) ----
     ed_table[0xB0] = [this]() {
-        static uint16_t last_ldir_pc = 0xFFFF;
-        if (reg.pc != last_ldir_pc) {
-            last_ldir_pc = reg.pc;
-            fprintf(stderr, "[LDIR] HL=0x%04X DE=0x%04X BC=0x%04X\n", reg.hl, reg.de, reg.bc);
-        }
         uint8_t val = read_mem(reg.hl);
         write_mem(reg.de, val);
         reg.hl++; reg.de++; reg.bc--;
