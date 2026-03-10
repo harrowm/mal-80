@@ -135,13 +135,13 @@ void Display::draw_string_pixels(int px, int py, const char* s, uint32_t fg, uin
 
 // ============================================================================
 // IN-WINDOW OVERLAY  (help / about)
-// Overlay occupies rows 2-13 (12 rows), cols 4-59 (56 chars) of the char grid.
+// Overlay occupies row 1 onward, cols 4-59 (56 chars) of the char grid.
+// Height is computed dynamically: title row + nlines content rows + footer row.
 // ============================================================================
 
 static constexpr int OVL_COL  = 4;   // left column (char grid)
-static constexpr int OVL_ROW  = 2;   // top row
+static constexpr int OVL_ROW  = 1;   // top row (row 1 gives a 1-row top margin)
 static constexpr int OVL_COLS = 56;  // width in characters
-static constexpr int OVL_ROWS = 12;  // height in rows
 
 // Return a string of exactly `width` chars, centred (space-padded).
 static std::string center_str(const char* s, int width) {
@@ -157,9 +157,6 @@ void Display::show_overlay(int kind) {
 
     int bx = OVL_COL * CHAR_CELL_W;
     int by = OVL_ROW * CHAR_CELL_H;
-    int bw = OVL_COLS * CHAR_CELL_W;   // 336 px
-    int bh = OVL_ROWS * CHAR_CELL_H;   // 144 px
-
     // Colour scheme: use the *next* phosphor preset so the overlay is visually
     // distinct from the emulator screen (white screen → amber overlay, etc.)
     int      next_mode = (phosphor_mode_ + 1) % 3;
@@ -175,17 +172,18 @@ void Display::show_overlay(int kind) {
     int          nlines;
 
     static const char* help_lines[] = {
-        "F5           @ key",
-        "F6           0 key",
+        "Home         TRS-80 CLEAR  (Ctrl+Left on Mac)",
+        "F5           @ key  (always unshifted)",
+        "F6           0 key  (always unshifted)",
         "F7           Dump RAM to memdump.bin",
         "F8           Quit",
         "Shift+F9     Cycle colour  (white/amber/green)",
-        "F10          Warm boot  (BASIC READY, keeps program)",
+        "F10          Warm boot  (keeps program in RAM)",
         "Shift+F10    Hard reset  (clears RAM)",
         "Shift+F11    This help",
         "F12          About",
         "Ctrl+V       Paste clipboard",
-        "Ctrl+0..3    Mount disk  drive 0-3",
+        "Ctrl+0..3    Mount disk image on drive 0-3",
     };
 
     static const char* about_lines[] = {
@@ -200,12 +198,15 @@ void Display::show_overlay(int kind) {
     if (kind == 1) {
         title  = " Mal-80 Hotkeys ";
         lines  = help_lines;
-        nlines = 10;
+        nlines = 12;
     } else {
         title  = " About Mal-80 ";
         lines  = about_lines;
         nlines = 6;
     }
+
+    int bw = OVL_COLS * CHAR_CELL_W;
+    int bh = (nlines + 2) * CHAR_CELL_H;  // title row + content rows + footer row
 
     // Fill box background
     fill_rect_fb(bx, by, bw, bh, txt_bg);
@@ -215,16 +216,15 @@ void Display::show_overlay(int kind) {
                        center_str(title, OVL_COLS).c_str(),
                        bar_fg, bar_bg);
 
-    // Content rows  (rows 1 .. OVL_ROWS-2 within box)
-    int content_rows = OVL_ROWS - 2;  // 10
-    for (int i = 0; i < nlines && i < content_rows; i++) {
+    // Content rows  (rows 1 .. nlines within box)
+    for (int i = 0; i < nlines; i++) {
         int ty = by + (i + 1) * CHAR_CELL_H;
         int tx = (OVL_COL + 1) * CHAR_CELL_W;  // one char indent from left edge
         draw_string_pixels(tx, ty, lines[i], txt_fg, txt_bg);
     }
 
     // Footer bar (bottom row of box)
-    int fy = by + (OVL_ROWS - 1) * CHAR_CELL_H;
+    int fy = by + (nlines + 1) * CHAR_CELL_H;
     draw_string_pixels(bx, fy,
                        center_str("any key to close", OVL_COLS).c_str(),
                        bar_fg, bar_bg);

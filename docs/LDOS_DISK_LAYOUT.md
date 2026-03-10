@@ -208,8 +208,10 @@ Known copy destinations observed in practice:
    └─ DI, SP = 0x41E0
    └─ reads T17/S4 (system index) into 0x5100
    └─ reads kernel sectors T09/S0..T10/S6 into 0x5100 (staging)
-   └─ reads 0x403D — if bit 3 = 0: SKIPS high-RAM module copies
    └─ copies each staged sector to its baked-in load address via 0x4CDB loop
+      (both low-RAM and high-RAM modules are copied unconditionally;
+       the exact gating mechanism is in the boot sector code,
+       verified by LDOS successfully loading all kernel modules in practice)
    └─ writes SVC table to 0x50B0..0x50B7 (PC=0x4259)
    └─ jumps to module init chain at HIGH$ (= 0xFFFF)
 

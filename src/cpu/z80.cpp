@@ -1258,11 +1258,6 @@ void Z80::init_ed_table() {
 
     // ---- LDDR (ED B8) ----
     ed_table[0xB8] = [this]() {
-        static uint16_t last_lddr_pc = 0xFFFF;
-        if (reg.pc != last_lddr_pc) {
-            last_lddr_pc = reg.pc;
-            fprintf(stderr, "[LDDR] HL=0x%04X DE=0x%04X BC=0x%04X\n", reg.hl, reg.de, reg.bc);
-        }
         uint8_t val = read_mem(reg.hl);
         write_mem(reg.de, val);
         reg.hl--; reg.de--; reg.bc--;

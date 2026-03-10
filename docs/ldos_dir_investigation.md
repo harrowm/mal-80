@@ -1,5 +1,10 @@
 # LDOS 5.3.1 DIR :0 "ILLEGAL DRIVE NUMBER" — Investigation Notes
 
+> **STATUS: FIXED** (Sessions 5–6). Root cause: FD1771 INDEX PULSE (bit 1 of 0x37EC)
+> was never asserted in the emulator, causing SVC 0xC4's motor-wait loop to time out.
+> Fix: simulate periodic INDEX PULSE in `Bus::read()` using `fdc_type1_idle_` flag
+> and `last_type1_t_` phase anchor (see Session 5 & 6 below).
+
 ## The Problem
 
 When LDOS 5.3.1 boots on mal-80 and the user types `DIR :0`, LDOS responds with
@@ -205,7 +210,7 @@ accessed track), and that returns A=0 → NZ → error.
 
 ---
 
-## Current Status (Bug Persists)
+## Session 3/4 Status (Bug Persisted at This Point)
 
 ### RECTYPE fix applied (necessary but not sufficient)
 
@@ -921,5 +926,71 @@ SVC 0xC4 returns Z → `CALL 0x44B8` returns Z → DISKDIR reads the directory �
 
 | Session | Fix | File | Status |
 |---------|-----|------|--------|
-| 3 | RECTYPE: `bool deleted = (t == 17)` (was excluding S0/S1) | FDC.cpp | Applied ✓ |
-| 5 | INDEX PULSE simulation at 0x37EC read | Bus.cpp | Applied ✓ |
+| 3 | RECTYPE: `bool deleted = (t == 17)` (was excluding S0/S1) | `FDC.cpp` | Applied ✓ |
+| 5 | INDEX PULSE simulation at 0x37EC read (initial implementation) | `Bus.cpp` | Applied ✓ |
+| 6 | INDEX PULSE: guard with `fdc_type1_idle_`, phase relative to last seek | `Bus.cpp` | Applied ✓ |
+
+---
+
+## Session 6 Findings — Non-determinism and Type II DRQ Contamination Fix
+
+### Problem with Session 5 fix
+
+The initial INDEX PULSE fix used `global_t_states % INDEX_PERIOD` as the phase.
+This is non-deterministic: depending on which T-state the seek happens to land on,
+the phases of loop ① / ② / ③ vary. In the worst case the 20-frame timeout could
+expire before loop ② sees a rising edge — on paper:
+
+```
+worst case = 354,800 (wait for HIGH) + 17,740 (wait for LOW) + 354,800 = 727,340 T > 589,960 T timeout
+```
+
+Also, after a Type II command (sector read/write), `status_` returns to `0x00`
+on completion — making the condition `value == 0x00` true even though bit 1 is
+**DRQ** in a Type II context, not INDEX. Reading stale sectors could silently inject
+an incorrect INDEX PULSE into Type II status reads.
+
+### Fix (commit 2648d92)
+
+Two new fields added to `Bus`:
+
+```cpp
+// Bus.hpp
+uint64_t last_type1_t_   = 0;    // T-states at last Type I FDC command
+bool     fdc_type1_idle_ = false; // True after Type I cmd, false after Type II+
+```
+
+On every **write** to 0x37EC (FDC command register):
+```cpp
+if (addr == 0x37EC) {
+    if ((val >> 4) <= 0x7) {   // Type I: upper nibble 0-7 (Restore/Seek/Step)
+        fdc_type1_idle_ = true;
+        last_type1_t_   = global_t_states;  // phase anchor: reset per seek
+    } else {                   // Type II / III / IV
+        fdc_type1_idle_ = false;
+    }
+}
+```
+
+On **read** from 0x37EC, INDEX PULSE only injected when genuinely in Type I idle:
+```cpp
+if (addr == 0x37EC && fdc_type1_idle_
+        && (value == 0x00 || value == 0x04 /* ST_TRACK0 */)) {
+    constexpr uint64_t INDEX_PERIOD = 354800;  // T-states / revolution (300 RPM)
+    constexpr uint64_t INDEX_WIDTH  =  17740;  // 5% duty ≈ 1 ms at 1.774 MHz
+    uint64_t elapsed = global_t_states - last_type1_t_;
+    if ((elapsed % INDEX_PERIOD) < INDEX_WIDTH)
+        value |= 0x02;  // bit 1 = INDEX PULSE
+}
+```
+
+**Phase reset at seek** guarantees deterministic worst-case timing:
+- At elapsed=0 (just after seek), we're in the HIGH part of the pulse
+- Loop ①: wait-LOW ≤ 17,740 T (pulse end)
+- Loop ②: wait-HIGH ≤ 337,060 T (rest of revolution)
+- Loop ③: wait-LOW ≤ 17,740 T (second pulse end)
+- Total ≤ 372,540 T ← well under 589,960 T timeout ✓
+
+**`fdc_type1_idle_` guard** prevents DRQ contamination: after `cmd_read_sector()`
+clears BUSY/DRQ, we're no longer in Type I idle, so bit 1 of a status read
+retains its correct meaning (no spurious INDEX inject).

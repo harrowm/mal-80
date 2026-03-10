@@ -207,6 +207,18 @@ FD1771-compatible controller. JV1 disk format: 35 tracks, 10 sectors/track,
 256 bytes/sector. Drive 0 is the boot drive. LDOS boots from T00/S0.
 Disk images in `disks/` directory.
 
+**INDEX PULSE simulation** (`Bus::read()` for 0x37EC):
+After a Type I command (Seek/Restore/Step), `Bus` sets `fdc_type1_idle_=true`
+and records `last_type1_t_`. On subsequent reads of 0x37EC while in Type I idle,
+bit 1 is ORed with a simulated periodic INDEX PULSE (300 RPM = 354,800 T/revolution,
+5% duty ~17,740 T/pulse, phase measured from `last_type1_t_`). After any Type II/III
+command, `fdc_type1_idle_=false` and no INDEX is injected. This is required for the
+LDOS SVC 0xC4 motor-wait loops (three index-pulse sync loops at 0x4E78-0x4E85) to
+complete instead of timing out with ILLEGAL DRIVE NUMBER.
+
+**RECTYPE (deleted data mark)**: Track 17 (directory track) returns bit 5 set in
+FDC status after a sector read, matching real JV1 format. Code: `bool deleted = (t == 17)`.
+
 ### LDOS Disk Layout Reference
 `docs/LDOS_DISK_LAYOUT.md` — comprehensive reference covering JV1 format,
 memory map, track layout, GAT/HIT/directory format, granule addressing, boot
@@ -222,10 +234,13 @@ variables, ROM intercept addresses, and boot sequence.
 
 ## Recent Commits
 ```
-ecb7a93  Refactor audio filter initialization and remove debug logging for keyboard events
-670380d  Enhance debugging output for key events and keyboard reads; refine freeze detection logic in Debugger
-a5d602d  Add sound emulation support with SDL audio integration
-f33133b  Update CLAUDE.md and README to reflect refactored architecture
-6540efa  Implement Debugger, Emulator, KeyInjector, and SoftwareLoader classes
-5d41b38  Add clarification on handling ambiguous bug reports; improve error handling in main
+1a7f930  Remove LDIR debug logging
+418f281  Remove FDC debug fprintf logging
+39566a3  Remove investigation watchpoints from step_frame
+2648d92  Fix INDEX PULSE non-determinism and Type II DRQ contamination
+7025d23  Fix DIR :0 ILLEGAL DRIVE NUMBER — simulate FD1771 INDEX PULSE in Bus
+8fda394  Add disassembly tools for LDOS investigation
+0253904  Add tinyfiledialogs header file for cross-platform file dialog support
+c247a14  Part way through fixing LDOS startup issues
+bcb5e00  Refactor Emulator and CPU Logic; Enhance Memory Banking Documentation
 ```
