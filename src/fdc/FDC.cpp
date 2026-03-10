@@ -39,11 +39,14 @@ bool FDC::load_disk(int drive, const std::string& path) {
     disk_names_[drive]        = path;
     drives_[drive].head_track = 0;
     drives_[drive].tracks     = static_cast<int>(size / (SECTORS_PER_TRACK * BYTES_PER_SECTOR));
-    // FD1771 power-on state: head on track 0, drive ready.
+    // FD1771 power-on state: head on track 0, motor not yet running.
     // The Level II ROM checks: LD A,(0x37EC); INC A; CP 2; JP C, no_disk
     // Status 0x00 is treated same as 0xFF (no FDC). Must be >= 0x01.
-    // A real FD1771 after reset with disk shows TRACK0 (bit 2) = 0x04.
-    status_ = ST_TRACK0;
+    // xtrs initialises to TRSDISK_NOTRDY|TRSDISK_TRKZERO = 0x84:
+    // NOTREADY (bit 7) reflects motor not yet up to speed; TRACK0 (bit 2)
+    // reflects head position.  NOTREADY is cleared by the first successful
+    // Type I command (Restore/Seek/Step) once the motor has started.
+    status_ = ST_NOTREADY | ST_TRACK0;
     std::cout << "[FDC] Drive " << drive << ": loaded " << path
               << " (" << size << " bytes, "
               << drives_[drive].tracks << " tracks)\n";
@@ -100,6 +103,10 @@ bool FDC::Drive::write_sector(int track, int sector,
         // Extend image if needed (e.g. formatting a larger disk)
         image.resize(offset + BYTES_PER_SECTOR, 0x00);
     }
+    // Log first 32 bytes of write for debugging
+    fprintf(stderr, "[FDC] WriteSec T%02d/S%d data:", track, sector);
+    for (int i = 0; i < 32; i++) fprintf(stderr, " %02X", data[i]);
+    fprintf(stderr, "\n");
     std::copy(data.begin(), data.end(),
               image.begin() + static_cast<ptrdiff_t>(offset));
     return true;
@@ -195,14 +202,23 @@ void FDC::execute_command(uint8_t cmd) {
     write_pending_ = false;
     intrq_         = false;
 
-    static const char* cmd_names[] = {
-        "Restore","Seek","Step","StepU","StepIn","StepInU","StepOut","StepOutU",
-        "ReadSec","ReadSecM","WriteSec","WriteSecM","ReadAddr","ForceInt","ReadTrk","WriteTrk"
-    };
-    fprintf(stderr, "[FDC] cmd=0x%02X (%s) T%02d/S%d drv=%d\n",
-            cmd, cmd_names[cmd >> 4], track_, sector_, current_drive());
-
     uint8_t type = cmd >> 4;
+    {
+        Drive* tmp = active_drive();
+        int t = tmp ? tmp->head_track : -1;
+        switch (type) {
+        case 0x0: fprintf(stderr, "[FDC] Restore\n"); break;
+        case 0x1: fprintf(stderr, "[FDC] Seek -> T%02d\n", (int)data_); break;
+        case 0x2: case 0x3: fprintf(stderr, "[FDC] Step(T%02d)\n", t); break;
+        case 0x4: case 0x5: fprintf(stderr, "[FDC] StepIn(T%02d)\n", t); break;
+        case 0x6: case 0x7: fprintf(stderr, "[FDC] StepOut(T%02d)\n", t); break;
+        case 0x8: case 0x9: /* logged in cmd_read_sector with sector data */ break;
+        case 0xA: case 0xB: fprintf(stderr, "[FDC] WriteSec T%02d/S%d\n", t, (int)sector_); break;
+        case 0xC: fprintf(stderr, "[FDC] ReadAddr T%02d (sector_=%d)\n", t, (int)sector_); break;
+        case 0xD: fprintf(stderr, "[FDC] ForceInt 0x%02X\n", cmd); break;
+        default:  fprintf(stderr, "[FDC] Unknown cmd 0x%02X\n", cmd); break;
+        }
+    }
     switch (type) {
     case 0x0:                          cmd_restore(cmd);              break;
     case 0x1:                          cmd_seek(cmd);                 break;
@@ -234,6 +250,7 @@ void FDC::cmd_restore(uint8_t /*cmd*/) {
 
     d->head_track = 0;
     track_        = 0;
+    // Motor is now running — clear NOTREADY.  Head is at track 0 → TRACK0.
     status_       = ST_TRACK0;
     intrq_        = true;
 }
@@ -249,6 +266,7 @@ void FDC::cmd_seek(uint8_t /*cmd*/) {
     last_dir_     = (target > d->head_track) ? +1 : -1;
     d->head_track = target;
     track_        = static_cast<uint8_t>(target);
+    // Motor is now running — clear NOTREADY.
     status_       = (track_ == 0) ? ST_TRACK0 : 0x00;
     intrq_        = true;
 }
@@ -265,6 +283,7 @@ void FDC::cmd_step(uint8_t /*cmd*/, int dir, bool update_track) {
     d->head_track = next;
     if (update_track) track_ = static_cast<uint8_t>(next);
 
+    // Motor is now running — clear NOTREADY.
     status_ = (d->head_track == 0) ? ST_TRACK0 : 0x00;
     intrq_  = true;
 }
@@ -281,8 +300,6 @@ void FDC::cmd_read_sector(uint8_t /*cmd*/) {
     int s = sector_;
 
     if (s >= SECTORS_PER_TRACK || t >= d->tracks) {
-        fprintf(stderr, "[FDC] RNF! head_track=%d sector_=%d (sectors_per_track=%d tracks=%d)\n",
-                t, s, SECTORS_PER_TRACK, d->tracks);
         status_ = ST_RNF;
         intrq_  = true;
         return;
@@ -293,45 +310,22 @@ void FDC::cmd_read_sector(uint8_t /*cmd*/) {
     buf_pos_ = 0;
     buf_len_ = BYTES_PER_SECTOR;
 
+    // Log in xtrs-compatible format for comparison
+    fprintf(stderr, "[FDC-mal80] ReadSector drv=%d trk=%d sec=%d pc=0x%04X bytes:",
+            current_drive(), t, s, (unsigned)last_pc_);
+    for (int i = 0; i < 16; i++) fprintf(stderr, " %02x", bytes[i]);
+    fprintf(stderr, "\n");
+
     last_read_track_  = t;
     last_read_sector_ = s;
 
-    // Track 17 on Model I TRSDOS/LDOS: directory entry sectors (2+) use a
-    // deleted data address mark; GAT (sector 0) and HIT (sector 1) use a normal mark.
-    // On data tracks: LDOS SYS module *header* sectors begin with 0x1F (the copyright
-    // block length-prefix byte) and were formatted with deleted data marks on real
-    // hardware.  The FD1771 reports the mark type in bit 5 (RECTYPE=1 for deleted).
-    // LDOS uses RECTYPE to distinguish header sectors (parse module descriptor) from
-    // code sectors (copy raw bytes to load address).  JV1 images have no per-sector
-    // metadata, so we infer it from the content.
-    // Note: Track 0 sectors (boot loader, secondary boot) use NORMAL data marks —
-    // the second-stage at 0x4777 uses RECTYPE=0 to indicate "module code to copy".
-    bool deleted = ((t == 17) && (s >= 2))
-                || ((t != 17) && (bytes[0] == 0x1F));
+    // JV1 format: track 17 (directory track) is formatted with FA data address
+    // marks on ALL sectors (S0 GAT through S9).  All other tracks use FB (normal).
+    // This matches xtrs behaviour and is required by LDOS's module loader, which
+    // checks RECTYPE to distinguish directory-track sectors from data sectors.
+    bool deleted = (t == 17);
     status_ = ST_BUSY | ST_DRQ | (deleted ? ST_RECTYPE : 0x00);
 
-    // Log sector type and inferred load address for every sector read.
-    if (t == 17) {
-        fprintf(stderr, "[SEC] T%02d/S%d DIR    bytes[0..3]=0x%02X 0x%02X 0x%02X 0x%02X\n",
-                t, s, bytes[0], bytes[1], bytes[2], bytes[3]);
-    } else if (bytes[0] == 0x1F) {
-        // Module header: 0x1F, len, name[8], load_hi, load_lo, ...
-        // LDOS SYS header layout: [0]=0x1F [1]=name_len [2..9]=name [10]=load_hi [11]=load_lo
-        char name[9] = {};
-        for (int i = 0; i < 8; i++) {
-            uint8_t c = bytes[i + 2];
-            name[i] = (c >= 0x20 && c < 0x7F) ? (char)c : '?';
-        }
-        uint16_t load = (uint16_t)(bytes[11] | (bytes[10] << 8));
-        fprintf(stderr, "[SEC] T%02d/S%d HEADER  name=\"%.8s\"  load=0x%04X  len=0x%02X  RECTYPE=%d\n",
-                t, s, name, load, bytes[1], deleted ? 1 : 0);
-    } else {
-        // Code sector: bytes[0..1] = LE load address
-        uint16_t load = (uint16_t)(bytes[0] | (bytes[1] << 8));
-        const char* region = (load > 0x7FFF) ? "HIGH" : "low ";
-        fprintf(stderr, "[SEC] T%02d/S%d CODE    load=0x%04X [%s]  data[0..3]=0x%02X 0x%02X 0x%02X 0x%02X\n",
-                t, s, load, region, bytes[2], bytes[3], bytes[4], bytes[5]);
-    }
 }
 
 void FDC::cmd_write_sector(uint8_t /*cmd*/) {
@@ -342,12 +336,10 @@ void FDC::cmd_write_sector(uint8_t /*cmd*/) {
     int s = sector_;
 
     if (s >= SECTORS_PER_TRACK || t >= d->tracks) {
-        fprintf(stderr, "[FDC] WriteSec RNF! head_track=%d sector_=%d\n", t, s);
         status_ = ST_RNF;
         intrq_  = true;
         return;
     }
-    fprintf(stderr, "[FDC] WriteSec T%02d/S%d starting...\n", t, s);
 
     write_pending_  = true;
     write_track_    = t;
@@ -366,10 +358,16 @@ void FDC::cmd_read_address(uint8_t /*cmd*/) {
     Drive* d = active_drive();
     if (!d) { status_ = ST_NOTREADY; intrq_ = true; return; }
 
-    // Synthesise an ID field for the current head position.
-    // The FD1771 also updates the sector register with the sector number found.
+    // Synthesise an ID field for the "next" sector at the current head position.
+    // JV1 sectors are physically laid out using this interleave on a real disk.
+    // LDOS uses Read Address to verify track position after a seek; it reads
+    // back the track byte and ignores rotation-dependent sector ordering.
+    static constexpr uint8_t JV1_INTERLEAVE[10] = {0,5,1,6,2,7,3,8,4,9};
     uint8_t trk = static_cast<uint8_t>(d->head_track);
-    uint8_t sec = sector_;
+    // Return the logically-next interleaved sector.  We use sector_ as the
+    // index into the interleave table so successive Read Address calls cycle
+    // through realistic sector IDs without needing rotation simulation.
+    uint8_t sec = JV1_INTERLEAVE[sector_ % SECTORS_PER_TRACK];
 
     buf_[0] = trk;    // Track
     buf_[1] = 0x00;   // Side 0
@@ -380,8 +378,10 @@ void FDC::cmd_read_address(uint8_t /*cmd*/) {
     buf_pos_ = 0;
     buf_len_ = 6;
 
-    // FD1771 behaviour: track register is loaded with the track field from the ID
+    // FD1771 (P1771 / Model I): track register ← track field from ID.
+    // Sector register ← sector field from ID (P1771 datasheet, byte 3 of 6).
     track_  = trk;
+    sector_ = sec;
     status_ = ST_BUSY | ST_DRQ;
 }
 
@@ -389,12 +389,18 @@ void FDC::cmd_read_address(uint8_t /*cmd*/) {
 // TYPE IV — FORCE INTERRUPT
 // ============================================================================
 void FDC::cmd_force_interrupt(uint8_t cmd) {
-    // Abort any in-progress operation (already done in execute_command)
-    status_ &= static_cast<uint8_t>(~(ST_BUSY | ST_DRQ));
-
-    // Bit 3 set: generate INTRQ immediately
-    if (cmd & 0x08) {
-        intrq_ = true;
+    // Abort any in-progress operation (already done in execute_command).
+    // After Force Interrupt the FD1771 presents Type I status: reflect actual
+    // head position (TRACK0 bit) and drive ready state.
+    Drive* d = active_drive();
+    if (!d) {
+        status_ = ST_NOTREADY;
+    } else {
+        status_ = (d->head_track == 0) ? ST_TRACK0 : 0x00;
     }
+
+    // Bit 3: generate INTRQ immediately
+    if (cmd & 0x08)
+        intrq_ = true;
     // Bits 0-2 relate to index pulses / ready transitions — not needed
 }

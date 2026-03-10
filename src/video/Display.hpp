@@ -51,6 +51,7 @@ enum class DisplayAction {
     HARD_RESET,       // Shift+F10
     MOUNT_DISK,       // Ctrl+0..3  (drive index in pop_action drive_out)
     PASTE_CLIPBOARD,  // Ctrl+V
+    DUMP_RAM,         // F11  — dump full 64KB memory map to memdump.bin
 };
 
 // ============================================================================

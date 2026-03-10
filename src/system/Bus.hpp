@@ -199,33 +199,12 @@ private:
     FDC fdc_;
 
     // =========================================================================
-    // LDOS SVC CHAIN PROTECTION (deferred-restore approach)
-    // The SVC dispatcher lives at 0x50B0-0x50B7.  When LDOS modules load at
-    // 0x4E00+ (16-KB module addresses), their data overlaps 0x50B0-0x50B7.
-    // We save the bytes when the kernel first writes them (PC=0x4259), allow
-    // module copy+verify to proceed normally, then restore each byte right
-    // after the copy-loop INC HL at 0x4CDF moves past it.
-    // =========================================================================
-    bool    svc_saved_valid_ = false;
-    uint8_t svc_saved_[8]   = {};  // saved bytes for 0x50B0-0x50B7
-
-    // =========================================================================
     // FLAT MEMORY MODE (for CP/M test programs like ZEXALL)
     // =========================================================================
     bool flat_mode = false;
     std::array<uint8_t, 65536> flat_mem{};
 
 public:
-    // Restore a saved SVC dispatcher byte after the copy-loop verify at 0x4CDC.
-    // Called from Emulator::step_frame() after INC HL (0x4CDF) passes the byte.
-    void restore_svc_byte_after_verify(uint16_t addr) {
-        if (!svc_saved_valid_) return;
-        if (addr < 0x50B0 || addr > 0x50B7) return;
-        uint8_t saved = svc_saved_[addr - 0x50B0];
-        ram[addr - RAM_START] = saved;
-        fprintf(stderr, "[SVC] restored 0x%04X = 0x%02X after module copy-verify\n", addr, saved);
-    }
-
     // Direct access to flat memory (for loading .COM files)
     uint8_t* get_flat_memory() { return flat_mem.data(); }
     bool is_flat_mode() const { return flat_mode; }

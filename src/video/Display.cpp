@@ -177,6 +177,7 @@ void Display::show_overlay(int kind) {
     static const char* help_lines[] = {
         "F5           @ key",
         "F6           0 key",
+        "F7           Dump RAM to memdump.bin",
         "F8           Quit",
         "Shift+F9     Cycle colour  (white/amber/green)",
         "F10          Warm boot  (BASIC READY, keeps program)",
@@ -427,6 +428,12 @@ bool Display::handle_events(uint8_t* keyboard_matrix) {
                 phosphor_mode_ = (phosphor_mode_ + 1) % 3;
                 pixel_fg_      = PHOSPHOR_FG[phosphor_mode_];
                 pixel_bg_      = PHOSPHOR_BG[phosphor_mode_];
+                continue;
+            }
+
+            // F7: dump full 64KB memory map to memdump.bin
+            if (sym == SDLK_F7 && !shifted) {
+                pending_action_ = DisplayAction::DUMP_RAM;
                 continue;
             }
 

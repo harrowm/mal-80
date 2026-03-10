@@ -127,7 +127,12 @@ Sectors observed during boot (`[SECDST]` log), read in order:
 | 18 | T10/S6 | 0x203F | — | Not a RAM module (address < 0x4000) |
 
 **Of the 17 kernel sectors, 11 have high-RAM load addresses (>0x7FFF).**
-These sectors are only copied if `0x403D` bit 3 = 1 at boot time.
+Note: the docs previously claimed these are only copied when `0x403D` bit 3 = 1,
+but that is **incorrect**. 0x403D bit 3 is the ROM display-width flag (32-column
+vs 64-column video mode), not an expansion-RAM flag. The LDOS kernel at
+0x4000–0xFFFF contains zero references to 0x403D. The actual mechanism
+controlling whether high-RAM modules are loaded is in the LDOS disk boot sector
+code and has not yet been fully disassembled.
 
 ---
 
@@ -165,7 +170,7 @@ Known copy destinations observed in practice:
 | 0x4000 | JMPDO | `JP nnnn` — LDOS SVC dispatcher entry point |
 | 0x4003 | JMPNO | `JP nnnn` — LDOS NMI handler |
 | 0x4006 | JMPTO | `JP nnnn` — initial entry point after boot |
-| 0x403D | RAMFLG | Bit 3 = expansion RAM installed. **Boot loader checks this to decide whether to copy high-RAM modules.** ROM leaves it 0x00; must be 0x08+ for high-RAM load. Written by ROM memory-size detection routine (which LDOS bypasses). |
+| 0x403D | DSPFLG | **Display-width flag** — bit 3 = 32-column (double-wide) mode active. All ROM sites that read/write 0x403D immediately do `OUT (0xFF),a` (video control port) and adjust cursor arithmetic. **Not** an expansion-RAM flag. The LDOS kernel (0x4000–0xFFFF) never reads this address. Previously mislabelled `RAMFLG` in these notes. |
 | 0x4040 | FCBMAP | Active FCB (File Control Block) allocation map |
 | 0x4049 | HIGH$ lo | Low byte of top of available user RAM |
 | 0x404A | HIGH$ hi | High byte (0xFF → HIGH$ = 0xFFFF on 48 KB machine) |
@@ -212,40 +217,10 @@ Known copy destinations observed in practice:
    └─ sets HIGH$ = 0xFFFF (0x4049:0x404A)
    └─ calls next module init at address stored in HIGH$
 
-4. *** CRASH — high-RAM addresses contain 0x00 (uninitialised) ***
-   └─ execution runs NOP sled from 0xDEB6/0xFAxx through 0xFFFF
-   └─ RET at 0xFFFF returns to 0x0000 → ROM reset ("MEMORY SIZE?")
+4. Module init chain executes
+   └─ SYS12 init, SYS0 init, etc. — LDOS reaches READY prompt
+   └─ Prompts: "Date?" then "Time?" then boots to LDOS `READY` prompt
 ```
-
----
-
-## Known Boot Bug in mal-80 (as of 2026-03-03)
-
-**Symptom**: LDOS crashes immediately after date/time entry with NOP-sled execution
-through 0xDEB6 → 0xFAxx → 0xFFFF → RST 0 (→ ROM "MEMORY SIZE?" prompt).
-
-**Root cause**: 11 of the 17 LDOS kernel sectors have high-RAM load addresses
-(>0x7FFF). These sectors are staged to 0x5100 correctly by the FDC, but the
-copy loop at 0x4CDB never copies them to their final high-RAM destinations.
-Those module init entry points are then called into uninitialised RAM → crash.
-
-**What controls high-RAM loading**: The boot loader at 0x4224 reads byte 0 of
-0x5100 (the first byte of T17/S4, the system index sector, staged there at boot),
-tests bit 4, and conditionally loads high-RAM modules. T17/S4 byte 0 = `0x5F`,
-bit 4 = 1, which should indicate "load high-RAM" — so the condition appears to
-be met. Why the copy loop still skips high-RAM sectors is under investigation.
-
-**What has been ruled out**:
-- `0x403D` — only read by ROM code (PC < 0x4000), never by the LDOS boot loader
-- HIGH$ clamp — `0x4049:0x404A = 0xFFFF` is correct for a 48 KB disk
-- Bus write barrier — `RAM_END = 0xFFFF`, no software barrier prevents high-RAM writes
-- SVC write-lock — replaced with save/restore mechanism; not the issue
-
-**Next step**: Add `[BOOT]` tracing to the copy loop range (0x4240–0x42FF) to see
-exactly what HL values the boot loader passes to 0x4CDB for each of the 17 sectors,
-and find where/why high-RAM addresses are being skipped.
-
-Also tracked in: `LDOS_PHANTOM_ZERO_BUG.md`
 
 ---
 

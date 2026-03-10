@@ -64,6 +64,9 @@ public:
     // True if any drive has a disk loaded (used for expansion-interface detection).
     bool is_present() const;
 
+    // Set the CPU PC at the time of the current bus operation (for logging).
+    void set_pc(uint16_t pc) { last_pc_ = pc; }
+
     // Return the path of the disk image loaded in the given drive, or "" if empty.
     const std::string& get_disk_name(int drive) const {
         static const std::string empty;
@@ -117,6 +120,7 @@ private:
     int  last_read_sector_  = 0;      // Sector of most recent Read Sector command
 
     int last_dir_ = 1;     // Last step direction (+1 = in, -1 = out)
+    uint16_t last_pc_ = 0; // CPU PC at time of last bus write (for logging)
 
     std::array<std::string, DRIVES> disk_names_;  // Path of each loaded disk image
 

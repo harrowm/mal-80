@@ -189,17 +189,18 @@ MAX_QUEUED_FRAMES = 4     cap on SDL audio queue (~67 ms)
 
 ## LDOS Notes
 
-### 48KB RAM flag fix (`Bus.cpp` — `Bus::write()`)
-The TRS-80 ROM stores a 48KB expansion flag in RAM at `0x403D` (bit 3).
-Normally the ROM sets this flag when the user answers the "MEMORY SIZE?" prompt.
-But when booting from disk, LDOS pre-empts that prompt by booting directly from
-the disk before the RAM detection routine runs. The flag stays 0, causing LDOS
-to think it's running on a 16KB machine and place overlay modules at addresses
-that collide with the SVC (service call) chain at `0x50B6:0x50B7`, crashing LDOS
-after date/time entry.
+### 0x403D — display-width flag (NOT an expansion RAM flag)
+0x403D bit 3 is a **ROM display-mode flag** that controls 64-column vs 32-column
+(double-wide) video layout. All ROM references to 0x403D are immediately followed
+by `OUT (0xFF),a` (the video/cassette control port) and cursor-pointer arithmetic
+(`inc hl`/`dec hl`). There are **zero** references to 0x403D anywhere in the
+LDOS kernel at 0x4000–0xFFFF.
 
-Fix: in `Bus::write()`, when `addr == 0x403D`, force `val |= 0x08` before
-storing. Our emulator always has full 48KB RAM, so this is always correct.
+A previous investigation session wrongly named this the "48KB RAM flag" and
+tried forcing bit 3 set on every write. That caused LDOS date output to appear
+double-spaced (32-column wide-character mode) and was reverted. No forced write
+should be applied to 0x403D. High-RAM module loading is controlled by other
+mechanism(s) in the LDOS disk boot sector, not by this flag.
 
 ### FDC (src/fdc/FDC.hpp/cpp)
 FD1771-compatible controller. JV1 disk format: 35 tracks, 10 sectors/track,

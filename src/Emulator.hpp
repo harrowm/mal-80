@@ -43,10 +43,8 @@ private:
     SpeedMode     prev_speed_      = SpeedMode::NORMAL;
     std::string   prev_disk0_name_;
     uint16_t      prev_pc_         = 0;
-    bool          ldos_active_        = false;
     bool          ldos_date_injected_ = false;
     bool          auto_ldos_date_     = false;
-    bool          sys12_dispatched_   = false;  // set after first JP(HL)=0x4E00
 
     void step_frame(uint64_t t_budget);
     void deliver_interrupt(uint64_t& frame_ts);

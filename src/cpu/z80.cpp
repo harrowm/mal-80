@@ -438,12 +438,7 @@ void Z80::op_call() {
 }
 
 void Z80::op_ret() {
-    uint16_t ret_addr = pop();
-    if (ret_addr >= 0xF000) {
-        fprintf(stderr, "[BADRET] RET to 0x%04X from PC=0x%04X SP(before)=0x%04X\n",
-                ret_addr, reg.pc, reg.sp - 2);
-    }
-    reg.pc = ret_addr;
+    reg.pc = pop();
     add_ticks(10);
 }
 
@@ -454,11 +449,7 @@ void Z80::op_reti() {
 }
 
 void Z80::op_jp() {
-    uint16_t addr = fetch16();
-    if (addr >= 0xFE00) {
-        fprintf(stderr, "[HIGHJP] JP 0x%04X from PC=0x%04X\n", addr, reg.pc);
-    }
-    reg.pc = addr;
+    reg.pc = fetch16();
     add_ticks(10);
 }
 
