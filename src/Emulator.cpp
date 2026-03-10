@@ -236,6 +236,29 @@ void Emulator::step_frame(uint64_t t_budget) {
         if (injector_.handle_intercept(pc, cpu_, bus_, frame_ts))
             continue;
 
+        // Watchpoint: sub_4BF5 (SVC router) — on first SVC 0x93 call,
+        // save full 64KB memdump so we can disassemble DISKDIR display loop code.
+        if (pc == 0x4BF5 && cpu_.get_a() == 0x93) {
+            static bool svc93_dumped = false;
+            if (!svc93_dumped) {
+                svc93_dumped = true;
+                uint16_t hl = cpu_.get_hl();
+                fprintf(stderr, "[WP-SVC93] First SVC 0x93 call: B=%02X HL=%04X (RST28h at 0x%04X)\n",
+                        cpu_.get_b(), hl, hl - 1);
+                fprintf(stderr, "  mem[0x%04X-0x%04X]:", hl - 8, hl + 16);
+                for (int i = -8; i < 16; i++)
+                    fprintf(stderr, " %02X", bus_.peek(static_cast<uint16_t>(hl + i)));
+                fprintf(stderr, "\n");
+                FILE* f = fopen("memdump_svc93.bin", "wb");
+                if (f) {
+                    for (int addr = 0; addr < 65536; addr++)
+                        fputc(bus_.peek(static_cast<uint16_t>(addr)), f);
+                    fclose(f);
+                    fprintf(stderr, "  [saved → memdump_svc93.bin]\n");
+                }
+            }
+        }
+
         // Watchpoint: LDOS VALIDATE_ENTRY (0x4B45) — log registers to diagnose DIR bug
         // D should be 17 (0x11 = directory track) for validation to succeed.
         if (pc == 0x4B45) {

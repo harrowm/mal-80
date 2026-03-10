@@ -140,6 +140,10 @@ private:
     // TIMING & STATE
     // =========================================================================
     uint64_t global_t_states = 0;       // Total T-states since reset
+    uint64_t last_type1_t_   = 0;       // T-states at last Type I FDC command
+                                        // INDEX PULSE phase is measured from here
+    bool     fdc_type1_idle_ = false;   // True after Type I cmd, false after Type II+
+                                        // Prevents DRQ-bit corruption during sector reads
     uint16_t current_scanline = 0;      // Current video scanline (0-261)
     uint16_t t_states_in_scanline = 0;  // T-states within current scanline
     bool int_pending = false;           // Interrupt pending flag (cleared on delivery)

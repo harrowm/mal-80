@@ -26,6 +26,8 @@ void Bus::reset() {
     rom_shadow_.fill(0x00);
     rom_shadow_active_.fill(false);
     global_t_states = 0;
+    last_type1_t_   = 0;
+    fdc_type1_idle_ = false;
     current_scanline = 0;
     t_states_in_scanline = 0;
     int_pending = false;
@@ -45,6 +47,8 @@ void Bus::soft_reset() {
     rom_shadow_.fill(0x00);
     rom_shadow_active_.fill(false);
     global_t_states = 0;
+    last_type1_t_   = 0;
+    fdc_type1_idle_ = false;
     current_scanline = 0;
     t_states_in_scanline = 0;
     int_pending = false;
@@ -154,15 +158,25 @@ uint8_t Bus::read(uint16_t addr, bool is_m1) {
             value = 0x30;
         } else {
             value = fdc_.read(addr);   // 0x37EC-0x37EF: FDC registers
-            // Simulate FD1771 INDEX PULSE (bit 1) during Type I idle state.
-            // After Seek/Restore/Step, status_ has no BUSY, no DRQ, no RECTYPE.
-            // LDOS motor-wait loops (l4e78h/l4e7dh/l4e82h inside SVC 0xC4) need
-            // bit 1 to oscillate with disk rotation before calling VALIDATE_ENTRY.
-            // Real disk: 300 RPM → index pulse once per ~354,800 T-states (~5% duty).
-            if (addr == 0x37EC && (value == 0x00 || value == 0x04 /* ST_TRACK0 */)) {
-                constexpr uint64_t INDEX_PERIOD = 354800;  // T-states / revolution
-                constexpr uint64_t INDEX_WIDTH  =  17740;  // ~5% duty ≈ 1 ms at 1.774 MHz
-                if ((global_t_states % INDEX_PERIOD) < INDEX_WIDTH)
+            // Simulate FD1771 INDEX PULSE (bit 1) during GENUINE Type I idle state.
+            // After Seek/Restore/Step, status_ is 0x00 or 0x04 (no BUSY, no DRQ).
+            // After Type II/III (sector read/write), status is ALSO 0x00 on completion —
+            // but in that context bit 1 = DRQ, not INDEX.  Only inject when in true
+            // Type I idle (fdc_type1_idle_ is set on Type I write, cleared on Type II+).
+            //
+            // Phase resets to 0 on each seek so behaviour is deterministic per directory
+            // scan.  5% duty (one 17,740-T pulse per 354,800-T revolution, 300 RPM)
+            // matches real hardware and always fits the 20-frame (589,960 T) timeout:
+            // worst case = 354,800 + 17,740 + 354,800 = 727,340 > 589,960 looks bad on
+            // paper, but the three loops are wait-LOW / wait-HIGH / wait-LOW.  With
+            // phase reset at seek, elapsed=0 → HIGH; wait-LOW ≤ 17,740 + wait-HIGH ≤
+            // 337,060 + wait-LOW ≤ 17,740 = 372,540 T < 589,960. ✓
+            if (addr == 0x37EC && fdc_type1_idle_
+                    && (value == 0x00 || value == 0x04 /* ST_TRACK0 */)) {
+                constexpr uint64_t INDEX_PERIOD = 354800;  // T-states / revolution (300 RPM)
+                constexpr uint64_t INDEX_WIDTH  =  17740;  // 5% duty ≈ 1 ms at 1.774 MHz
+                uint64_t elapsed = global_t_states - last_type1_t_;
+                if ((elapsed % INDEX_PERIOD) < INDEX_WIDTH)
                     value |= 0x02;  // bit 1 = INDEX PULSE in Type I idle
             }
         }
@@ -204,6 +218,19 @@ void Bus::write(uint16_t addr, uint8_t val) {
             fprintf(stderr, "[FDC] data(seek_trk)=0x%02X  PC=0x%04X\n", val, last_cpu_pc_);
         }
         fdc_.write(addr, val);
+        // Track Type I idle state for INDEX PULSE simulation.
+        // Type I commands (Restore/Seek/Step, upper nibble 0–7) leave the drive
+        // in a genuine idle where bit 1 = INDEX PULSE.
+        // Type II/III/IV commands (upper nibble 8+) use bit 1 as DRQ — must NOT
+        // inject INDEX PULSE there or sector data gets corrupted.
+        if (addr == 0x37EC) {
+            if ((val >> 4) <= 0x7) {   // Type I: upper nibble 0-7
+                fdc_type1_idle_ = true;
+                last_type1_t_   = global_t_states;  // phase relative to this seek
+            } else {                       // Type II / III / IV
+                fdc_type1_idle_ = false;
+            }
+        }
     } else if (addr >= VRAM_START && addr <= VRAM_END) {
         // Video RAM writes (0x3C00-0x3FFF)
         vram[addr - VRAM_START] = val;

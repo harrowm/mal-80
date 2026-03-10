@@ -62,5 +62,6 @@ tests/zexall/*.com
 # Debug/investigation artifacts
 memdump.bin
 memdump_dir.bin
+memdump_svc93.bin
 diag_dir*.txt
 trace.log
