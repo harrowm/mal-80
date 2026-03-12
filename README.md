@@ -101,6 +101,7 @@ Once LDOS reaches the `READY` prompt:
 | `F6` | `0` key (always unshifted) |
 | `F7` | Dump RAM to `memdump.bin` |
 | `F8` | Quit |
+| `F9` | Toggle CRT effects on/off (scanlines + vignette) |
 | `Shift+F9` | Cycle phosphor colour (white → amber → green) |
 | `F10` | Warm boot — returns to BASIC `READY`, keeps program in RAM |
 | `Shift+F10` | Hard reset — clears RAM |

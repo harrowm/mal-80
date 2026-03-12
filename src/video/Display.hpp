@@ -102,6 +102,20 @@ private:
     std::array<uint32_t, TRS80_WIDTH * TRS80_HEIGHT> framebuffer{};
 
     // =========================================================================
+    // CRT POST-PROCESSING  (operates at window resolution 1152×576)
+    // post_buffer_ holds the upscaled+processed frame sent to SDL.
+    // crt_mask_    is pre-baked per-pixel multiplier (0-255): scanlines+vignette.
+    // =========================================================================
+    static constexpr int POST_W = WINDOW_WIDTH;   // 1152
+    static constexpr int POST_H = WINDOW_HEIGHT;  // 576
+
+    std::array<uint32_t, POST_W * POST_H> post_buffer_{};
+    std::array<uint8_t,  POST_W * POST_H> crt_mask_{};
+    bool crt_enabled_ = true;
+
+    void build_crt_mask();   // call once at init (mask is geometry-only)
+
+    // =========================================================================
     // CHARACTER GENERATOR ROM
     // =========================================================================
     std::array<uint8_t, CHAR_GEN_CHARS * CHAR_GEN_BYTES_PER_CHAR> char_generator{};

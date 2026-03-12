@@ -65,13 +65,14 @@ bool Display::init(const std::string& title) {
     screen_texture = SDL_CreateTexture(renderer,
                                        SDL_PIXELFORMAT_ARGB8888,
                                        SDL_TEXTUREACCESS_STREAMING,
-                                       TRS80_WIDTH, TRS80_HEIGHT);
+                                       POST_W, POST_H);
     if (!screen_texture) {
         std::cerr << "SDL Texture Creation Failed: " << SDL_GetError() << "\n";
         return false;
     }
 
     SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "nearest");
+    build_crt_mask();
     clear_screen();
     init_keyboard_matrix();
 
@@ -177,6 +178,7 @@ void Display::show_overlay(int kind) {
         "F6           0 key  (always unshifted)",
         "F7           Dump RAM to memdump.bin",
         "F8           Quit",
+        "F9           Toggle CRT effects on/off",
         "Shift+F9     Cycle colour  (white/amber/green)",
         "F10          Warm boot  (keeps program in RAM)",
         "Shift+F10    Hard reset  (clears RAM)",
@@ -198,7 +200,7 @@ void Display::show_overlay(int kind) {
     if (kind == 1) {
         title  = " Mal-80 Hotkeys ";
         lines  = help_lines;
-        nlines = 12;
+        nlines = 13;
     } else {
         title  = " About Mal-80 ";
         lines  = about_lines;
@@ -283,9 +285,57 @@ void Display::draw_character(uint16_t char_x, uint16_t char_y, uint8_t char_code
     }
 }
 
+// ============================================================================
+// CRT POST-PROCESSING
+// ============================================================================
+
+// Pre-bake a per-pixel luminance multiplier (0-255) combining:
+//   - Scanlines: every 3rd row (the "gap" between 3× scaled logical rows)
+//     is darkened to 65% — a subtle single-pixel dark line per character row.
+//   - Vignette: gentle radial falloff (25% darkening at corners).
+// This is geometry-only so it never needs rebuilding (colour is applied later).
+void Display::build_crt_mask() {
+    const float cx = POST_W * 0.5f;
+    const float cy = POST_H * 0.5f;
+    for (int py = 0; py < POST_H; py++) {
+        float sl = (py % WINDOW_SCALE == WINDOW_SCALE - 1) ? 0.65f : 1.0f;
+        float dy = (py - cy) / cy;
+        for (int px = 0; px < POST_W; px++) {
+            float dx  = (px - cx) / cx;
+            float vig = 1.0f - (dx * dx + dy * dy) * 0.25f;
+            if (vig < 0.0f) vig = 0.0f;
+            float m = sl * vig;
+            crt_mask_[py * POST_W + px] = static_cast<uint8_t>(m * 255.0f + 0.5f);
+        }
+    }
+}
+
 void Display::update_texture() {
-    SDL_UpdateTexture(screen_texture, nullptr, framebuffer.data(),
-                      TRS80_WIDTH * sizeof(uint32_t));
+    // Nearest-neighbour 3× upscale: framebuffer (384×192) → post_buffer_ (1152×576)
+    for (int py = 0; py < POST_H; py++) {
+        const uint32_t* src_row = &framebuffer[(py / WINDOW_SCALE) * TRS80_WIDTH];
+        uint32_t*       dst_row = &post_buffer_[py * POST_W];
+        for (int px = 0; px < POST_W; px++)
+            dst_row[px] = src_row[px / WINDOW_SCALE];
+    }
+
+    // Apply CRT mask (scanlines + vignette) if enabled
+    if (crt_enabled_) {
+        const uint8_t* mask = crt_mask_.data();
+        uint32_t*      out  = post_buffer_.data();
+        const int      N    = POST_W * POST_H;
+        for (int i = 0; i < N; i++) {
+            uint32_t p = out[i];
+            uint32_t m = mask[i];
+            uint32_t r = ((p >> 16) & 0xFF) * m >> 8;
+            uint32_t g = ((p >>  8) & 0xFF) * m >> 8;
+            uint32_t b = ( p        & 0xFF) * m >> 8;
+            out[i] = (p & 0xFF000000) | (r << 16) | (g << 8) | b;
+        }
+    }
+
+    SDL_UpdateTexture(screen_texture, nullptr, post_buffer_.data(),
+                      POST_W * sizeof(uint32_t));
     SDL_RenderClear(renderer);
     SDL_RenderCopy(renderer, screen_texture, nullptr, nullptr);
     SDL_RenderPresent(renderer);
@@ -420,6 +470,12 @@ bool Display::handle_events(uint8_t* keyboard_matrix) {
             if (sym == SDLK_F10) {
                 pending_action_ = shifted ? DisplayAction::HARD_RESET
                                           : DisplayAction::SOFT_RESET;
+                continue;
+            }
+
+            // F9 (unshifted): toggle CRT effects on/off
+            if (sym == SDLK_F9 && !shifted) {
+                crt_enabled_ = !crt_enabled_;
                 continue;
             }
 
