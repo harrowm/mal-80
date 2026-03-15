@@ -524,6 +524,7 @@ bool SoftwareLoader::parse_and_load_cmd(const std::vector<uint8_t>& buf,
 
         case 0x01: {  // Load block: [addr_lo] [addr_hi] [data...]
             if (i + 2 > buf.size()) {
+                if (has_exec) break;  // trailing garbage after exec — stop gracefully
                 std::cerr << "[CMD] Truncated load block in: " << label << "\n";
                 return false;
             }
@@ -534,6 +535,7 @@ bool SoftwareLoader::parse_and_load_cmd(const std::vector<uint8_t>& buf,
             int dc = static_cast<int>(frame) - 2;
             if (dc <= 0) dc = 256;  // count==2 or count==0 wraps
             if (i + (size_t)dc > buf.size()) {
+                if (has_exec) break;  // trailing garbage after exec — stop gracefully
                 std::cerr << "[CMD] Truncated data in load block at 0x"
                           << std::hex << addr << std::dec << ": " << label << "\n";
                 return false;
@@ -555,9 +557,8 @@ bool SoftwareLoader::parse_and_load_cmd(const std::vector<uint8_t>& buf,
             uint8_t hi = buf[i++];
             exec_addr  = static_cast<uint16_t>(lo | (hi << 8));
             has_exec   = true;
-            // Do NOT stop — last record wins; skip any remaining frame bytes
-            size_t extra = frame > 2 ? frame - 2 : 0;
-            if (i + extra <= buf.size()) i += extra;
+            // Stop here — exec record found; trailing data is not meaningful.
+            goto done_parsing;
             break;
         }
 
@@ -597,6 +598,7 @@ bool SoftwareLoader::parse_and_load_cmd(const std::vector<uint8_t>& buf,
             break;
         }
     }
+    done_parsing:
 
     if (!has_exec) {
         std::cerr << "[CMD] No transfer address in: " << label
