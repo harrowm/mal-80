@@ -16,7 +16,8 @@ software injection, and FD1771 floppy disk controller emulation (JV1 format).
 
 - **Z80 CPU** — passes all 67 ZEXALL tests
 - **Floppy disk** — FD1771 controller, JV1 format; boots LDOS 5.3.1 to `READY` prompt
-- **Instant software loading** — SYSTEM (.cas) and BASIC (.bas/.cas) files load very quickly via ROM intercepts, no FSK wait
+- **Instant software loading** — SYSTEM (.cas), BASIC (.bas/.cas), and CMD (.cmd) files load instantly via ROM intercepts, no FSK wait
+- **CMD file support** — load TRS-80 machine-language `.cmd` binaries directly from the command line; zip-transparent (reads from `.zip` archives seamlessly); runtime overlay loading via RST 28h SVC intercept (`@OPEN`/`@READ`/`@CLOSE`/`@LOAD`)
 - **Turbo mode** — 100× speed during BASIC injection, automatic throttle back to 60 Hz for gameplay
 - **1-bit audio** — port 0xFF square-wave output with IIR low-pass + DC-blocking filter via SDL audio
 - **CLOAD / CSAVE** — full FSK cassette emulation for normal tape workflows
@@ -37,12 +38,35 @@ make
 # Run (drops to BASIC READY prompt)
 ./mal-80
 
-# Load a game directly
+# Load a cassette game directly
 ./mal-80 --load scarfman
+
+# Load a CMD binary (machine-language disk program)
+./mal-80 --cmd adventure
 
 # Boot LDOS 5.3.1
 ./mal-80 --disk disks/ld1-531.dsk
+
+# Show all options
+./mal-80 --help
 ```
+
+---
+
+## Command-Line Options
+
+| Option | Description |
+|--------|-------------|
+| `--load <name>` | Auto-load a file from `software/` on startup. Case-insensitive prefix match; supports `.cas` and `.bas`. |
+| `--cmd <arg>` | Load a `.cmd` binary (machine-language disk program) directly into RAM and start executing. `<arg>` can be: a direct file path; a path whose parent directory exists as a `.zip` (e.g. `games/advent/start.cmd` → reads from `games/advent.zip`); or a bare name searched in `software/` (and inside `software/*.zip`). |
+| `--disk <path>` | Mount a JV1 disk image on drive 0 (boot drive). |
+| `--disk0 <path>` | Mount a JV1 disk image on drive 0. |
+| `--disk1 <path>` | Mount a JV1 disk image on drive 1. |
+| `--disk2 <path>` | Mount a JV1 disk image on drive 2. |
+| `--disk3 <path>` | Mount a JV1 disk image on drive 3. |
+| `--auto-ldos-date` | Auto-inject today's date/time when LDOS asks `Date ?`. |
+| `--colour <name>` | Set the phosphor colour on startup. `<name>` is one of `white`, `amber`, `green` (default: `green`). `--color` is also accepted. |
+| `--help` | Print all command-line options and exit. |
 
 ---
 
@@ -125,7 +149,7 @@ mal-80/
 └── src/
     ├── main.cpp            Entry point (~22 lines)
     ├── Emulator.hpp/cpp    Main loop, frame pacing, IM1 interrupt delivery
-    ├── SoftwareLoader.hpp/cpp  File loading, ROM intercepts (SYSTEM/CLOAD/CSAVE)
+    ├── SoftwareLoader.hpp/cpp  File loading, ROM intercepts (SYSTEM/CLOAD/CSAVE/CMD), RST 28h SVC intercept
     ├── KeyInjector.hpp/cpp Keyboard injection queue + $KEY intercept
     ├── Debugger.hpp/cpp    Circular trace buffer + freeze detector
     ├── Sound.hpp/cpp       1-bit audio: IIR filters + SDL_QueueAudio
@@ -170,6 +194,8 @@ entry points and loads files instantly:
 | `0x0293` CSRDON | CLOAD entry | Stream FSK playback (`.cas`) or inject keystrokes (`.bas`) |
 | `0x0284` | CSAVE entry | Record typed program back to `.cas` |
 | `0x0049` $KEY | Keypress wait | Drain injection queue one char at a time |
+| `0x0028` RST 28h | SVC dispatcher | When `--cmd` loaded: intercept LDOS SVCs (`@OPEN`/`@READ`/`@CLOSE`/`@LOAD`) for overlay files |
+| `0x0028` RST 28h | SVC dispatcher | When `--cmd` loaded: intercept LDOS SVCs (`@OPEN`/`@READ`/`@CLOSE`/`@LOAD`) for overlay files |
 
 File matching is case-insensitive prefix — `--load sc` matches `SCARFMAN.cas`.
 If both `.bas` and `.cas` exist for the same name, `.bas` takes priority.

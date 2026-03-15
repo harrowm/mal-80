@@ -87,6 +87,15 @@ public:
     // Character pattern lookup (public so Bus/Loader can use it)
     uint8_t get_char_pattern(uint8_t char_code, uint8_t row) const;
 
+    // Set phosphor colour mode: 0=white, 1=amber, 2=green (P1).
+    // Call after init() and before the first render.
+    void set_phosphor_mode(int mode) {
+        if (mode < 0 || mode > 2) return;
+        phosphor_mode_ = mode;
+        pixel_fg_      = PHOSPHOR_FG[mode];
+        pixel_bg_      = PHOSPHOR_BG[mode];
+    }
+
 private:
     // =========================================================================
     // SDL STATE
@@ -124,9 +133,9 @@ private:
     // =========================================================================
     // PHOSPHOR STATE
     // =========================================================================
-    int      phosphor_mode_ = 0;
-    uint32_t pixel_fg_      = PHOSPHOR_FG[0];  // "on" pixel colour
-    uint32_t pixel_bg_      = PHOSPHOR_BG[0];  // "off" pixel colour
+    int      phosphor_mode_ = 2;                // default: green (P1)
+    uint32_t pixel_fg_      = PHOSPHOR_FG[2];  // "on" pixel colour
+    uint32_t pixel_bg_      = PHOSPHOR_BG[2];  // "off" pixel colour
 
     // =========================================================================
     // IN-WINDOW OVERLAY  (help / about)

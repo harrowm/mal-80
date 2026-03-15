@@ -22,10 +22,57 @@ bool Emulator::init(int argc, char* argv[]) {
 
     // Parse CLI arguments
     std::string cli_load_name;
+    std::string cli_cmd_arg;
     std::string cli_disk_path[4];
+    int         cli_phosphor  = 2;  // default: green
     for (int i = 1; i < argc; i++) {
-        if (std::strcmp(argv[i], "--load") == 0 && i + 1 < argc)
+        if (std::strcmp(argv[i], "--help") == 0 || std::strcmp(argv[i], "-h") == 0) {
+            std::cout <<
+                "Usage: mal-80 [options]\n"
+                "\n"
+                "Options:\n"
+                "  --load <name>       Auto-load a file from software/ on startup.\n"
+                "                      Case-insensitive prefix match; supports .cas and .bas.\n"
+                "                      e.g. --load scarfman\n"
+                "\n"
+                "  --cmd <arg>         Load a .cmd binary (machine-language disk program)\n"
+                "                      directly into RAM and start executing. <arg> can be:\n"
+                "                        - A direct file path: --cmd /path/to/game.cmd\n"
+                "                        - A zip-embedded path: --cmd /path/game/start.cmd\n"
+                "                          (reads from /path/game.zip if it exists)\n"
+                "                        - A bare name searched in software/ and software/*.zip\n"
+                "                          e.g. --cmd adventure\n"
+                "                      Overlay files loaded at runtime via RST 28h SVC\n"
+                "                      intercept (@OPEN/@READ/@CLOSE/@LOAD) are resolved\n"
+                "                      from the same zip or directory automatically.\n"
+                "\n"
+                "  --disk <path>       Mount a JV1 disk image on drive 0 (boot drive).\n"
+                "  --disk0 <path>      Mount a JV1 disk image on drive 0.\n"
+                "  --disk1 <path>      Mount a JV1 disk image on drive 1.\n"
+                "  --disk2 <path>      Mount a JV1 disk image on drive 2.\n"
+                "  --disk3 <path>      Mount a JV1 disk image on drive 3.\n"
+                "                      JV1 format: 35 tracks x 10 sectors x 256 bytes.\n"
+                "\n"
+                "  --auto-ldos-date    Auto-inject today's date/time when LDOS asks 'Date ?'.\n"
+                "\n"
+                "  --colour <name>     Set the phosphor colour on startup.\n"
+                "  --color  <name>     <name> is one of: white, amber, green (default: green).\n"
+                "\n"
+                "  --help, -h          Print this help and exit.\n"
+                "\n"
+                "Hotkeys (in emulator window):\n"
+                "  F5           @ key      F8           Quit\n"
+                "  F6           0 key      F9           Toggle CRT effects\n"
+                "  F7           Dump RAM   Shift+F9     Cycle phosphor colour\n"
+                "  F10          Warm boot  Shift+F10    Hard reset\n"
+                "  Ctrl+V       Paste clipboard as keystrokes\n"
+                "  Ctrl+0..3    Mount disk image on drive 0-3\n"
+                "  Shift+F11    Hotkey help overlay\n";
+            return false;  // exit cleanly without running the emulator
+        } else if (std::strcmp(argv[i], "--load") == 0 && i + 1 < argc)
             cli_load_name = argv[++i];
+        else if (std::strcmp(argv[i], "--cmd") == 0 && i + 1 < argc)
+            cli_cmd_arg = argv[++i];
         else if (std::strcmp(argv[i], "--disk") == 0 && i + 1 < argc)
             cli_disk_path[0] = argv[++i];  // --disk defaults to drive 0
         else if (std::strcmp(argv[i], "--disk0") == 0 && i + 1 < argc)
@@ -38,11 +85,21 @@ bool Emulator::init(int argc, char* argv[]) {
             cli_disk_path[3] = argv[++i];
         else if (std::strcmp(argv[i], "--auto-ldos-date") == 0)
             auto_ldos_date_ = true;
+        else if ((std::strcmp(argv[i], "--colour") == 0 ||
+                  std::strcmp(argv[i], "--color")  == 0) && i + 1 < argc) {
+            std::string c = argv[++i];
+            if      (c == "white" || c == "0") cli_phosphor = 0;
+            else if (c == "amber" || c == "1") cli_phosphor = 1;
+            else if (c == "green" || c == "2") cli_phosphor = 2;
+            else std::cerr << "[WARN] Unknown colour '" << c
+                           << "' — use white, amber, or green\n";
+        }
     }
     if (!display_.init("Mal-80 - TRS-80 Emulator")) {
         std::cerr << "Failed to initialize display\n";
         return false;
     }
+    display_.set_phosphor_mode(cli_phosphor);
 
     try {
         bus_.load_rom("roms/level2.rom");
@@ -66,6 +123,9 @@ bool Emulator::init(int argc, char* argv[]) {
 
     if (!cli_load_name.empty())
         loader_.setup_from_cli(cli_load_name, injector_);
+
+    if (!cli_cmd_arg.empty())
+        loader_.load_cmd_file(cli_cmd_arg, bus_, cpu_);
 
     sound_.init();  // non-fatal: logs a warning if SDL audio unavailable
     return true;
@@ -232,6 +292,13 @@ void Emulator::step_frame(uint64_t t_budget) {
         loader_.on_cload_entry(pc, cpu_, bus_, injector_);
         loader_.on_cload_tracking(pc, cpu_, bus_, injector_);
         loader_.on_csave_entry(pc, bus_);
+
+        // Phase 2: intercept RST 28h when a CMD was loaded (no LDOS present)
+        // to handle @OPEN/@READ/@CLOSE/@LOAD overlay SVCs transparently.
+        if (loader_.cmd_loaded() && pc == 0x0028) {
+            loader_.on_svc_entry(cpu_, bus_);
+            continue;  // skip cpu_.step() — we faked the RST
+        }
 
         if (injector_.handle_intercept(pc, cpu_, bus_, frame_ts))
             continue;
